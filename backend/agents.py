@@ -62,10 +62,10 @@ def _init_langfuse() -> None:
             LANGFUSE_STATUS["enabled"] = True
             log.info("Langfuse initialised (host=%s, pk=%s...)", host, pk[:10])
         else:
-            LANGFUSE_STATUS.setdefault(
-                "last_error",
-                "auth_check failed - keys may be from a different cluster than LANGFUSE_HOST",
-            )
+            if not LANGFUSE_STATUS.get("last_error"):
+                LANGFUSE_STATUS["last_error"] = (
+                    "auth_check failed - keys may be from a different cluster than LANGFUSE_HOST"
+                )
             log.error("Langfuse auth_check failed. host=%s pk=%s...", host, pk[:10])
     except Exception as e:
         LANGFUSE_STATUS["last_error"] = f"init error: {e}"
