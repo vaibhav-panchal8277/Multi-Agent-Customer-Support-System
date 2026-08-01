@@ -1,89 +1,251 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
+"""FastAPI backend for multi-agent customer support platform."""
+from __future__ import annotations
+
 import logging
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
+import os
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
+from fastapi import APIRouter, FastAPI, HTTPException
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.middleware.cors import CORSMiddleware
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
+# import agents AFTER env is loaded
+from agents import AGENT_COLORS, flush_langfuse, run_turn  # noqa: E402
+
+# --- Mongo ---
+mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[os.environ["DB_NAME"]]
 
-# Create the main app without a prefix
-app = FastAPI()
-
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+app = FastAPI(title="Multi-Agent Support API")
+api = APIRouter(prefix="/api")
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+# ---------- Models ----------
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
+class SessionCreate(BaseModel):
+    title: Optional[str] = None
+    customer_email: Optional[str] = None
+
+
+class SessionOut(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    title: str
+    customer_email: Optional[str] = None
+    status: str = "open"
+    created_at: str
+    updated_at: str
+    last_agent: Optional[str] = None
+    message_count: int = 0
+
+
+class ChatIn(BaseModel):
+    session_id: str
+    message: str
+
+
+class ChatOut(BaseModel):
+    session_id: str
+    agent: str
+    agent_color: str
+    response: str
+    intent: Optional[str] = None
+    confidence: Optional[float] = None
+    trace_events: List[Dict[str, Any]] = []
+    tool_calls: List[Dict[str, Any]] = []
+
+
+# ---------- Routes ----------
+@api.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"ok": True, "service": "multi-agent-support", "model": "gpt-5.4-mini"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+@api.get("/agents")
+async def list_agents():
+    return {
+        "agents": [
+            {"key": "supervisor", "name": "Supervisor",
+             "color": AGENT_COLORS["supervisor"],
+             "scope": "Classifies intent, routes, asks clarifying questions."},
+            {"key": "billing", "name": "Billing",
+             "color": AGENT_COLORS["billing"],
+             "scope": "Invoices, charges, subscription plans, payments."},
+            {"key": "technical", "name": "Technical Support",
+             "color": AGENT_COLORS["technical"],
+             "scope": "Bugs, integrations, product errors, tickets."},
+            {"key": "refunds", "name": "Refunds",
+             "color": AGENT_COLORS["refunds"],
+             "scope": "Refund eligibility (rules engine) and processing."},
+        ]
+    }
 
-# Include the router in the main app
-app.include_router(api_router)
+
+@api.post("/sessions", response_model=SessionOut)
+async def create_session(body: SessionCreate):
+    sid = str(uuid.uuid4())
+    now = _now()
+    doc = {
+        "id": sid,
+        "title": body.title or "New conversation",
+        "customer_email": body.customer_email,
+        "status": "open",
+        "created_at": now,
+        "updated_at": now,
+        "last_agent": None,
+        "message_count": 0,
+    }
+    await db.sessions.insert_one(doc)
+    doc.pop("_id", None)
+    return SessionOut(**doc)
+
+
+@api.get("/sessions", response_model=List[SessionOut])
+async def list_sessions():
+    rows = await db.sessions.find({}, {"_id": 0}).sort("updated_at", -1).to_list(200)
+    return [SessionOut(**r) for r in rows]
+
+
+@api.get("/sessions/{sid}")
+async def get_session(sid: str):
+    session = await db.sessions.find_one({"id": sid}, {"_id": 0})
+    if not session:
+        raise HTTPException(404, "session not found")
+    messages = await db.messages.find({"session_id": sid}, {"_id": 0}) \
+        .sort("created_at", 1).to_list(1000)
+    return {"session": session, "messages": messages}
+
+
+@api.get("/sessions/{sid}/traces")
+async def get_traces(sid: str):
+    rows = await db.turns.find({"session_id": sid}, {"_id": 0}) \
+        .sort("created_at", 1).to_list(500)
+    return {"turns": rows}
+
+
+@api.post("/chat", response_model=ChatOut)
+async def chat(body: ChatIn):
+    session = await db.sessions.find_one({"id": body.session_id}, {"_id": 0})
+    if not session:
+        raise HTTPException(404, "session not found. create one first via POST /api/sessions")
+
+    # load history
+    history_docs = await db.messages.find(
+        {"session_id": body.session_id}, {"_id": 0}
+    ).sort("created_at", 1).to_list(200)
+    history = [{"role": m["role"], "content": m["content"]} for m in history_docs]
+
+    # persist user message
+    user_msg = {
+        "id": str(uuid.uuid4()),
+        "session_id": body.session_id,
+        "role": "user",
+        "content": body.message,
+        "agent": None,
+        "created_at": _now(),
+    }
+    await db.messages.insert_one(dict(user_msg))
+
+    # run graph
+    state = await run_turn(body.session_id, body.message, history)
+    response_text = state.get("response", "…")
+    final_agent = state.get("current_agent_final") or "supervisor"
+
+    # persist assistant message
+    asst_msg = {
+        "id": str(uuid.uuid4()),
+        "session_id": body.session_id,
+        "role": "assistant",
+        "content": response_text,
+        "agent": final_agent,
+        "agent_color": AGENT_COLORS.get(final_agent, "#A1A1AA"),
+        "intent": state.get("intent"),
+        "confidence": state.get("confidence"),
+        "trace_events": state.get("trace_events", []),
+        "tool_calls": state.get("tool_calls", []),
+        "created_at": _now(),
+    }
+    await db.messages.insert_one(dict(asst_msg))
+
+    # persist turn trace (for admin dashboard)
+    turn_doc = {
+        "id": str(uuid.uuid4()),
+        "session_id": body.session_id,
+        "user_message": body.message,
+        "response": response_text,
+        "agent": final_agent,
+        "intent": state.get("intent"),
+        "confidence": state.get("confidence"),
+        "trace_events": state.get("trace_events", []),
+        "tool_calls": state.get("tool_calls", []),
+        "hops": state.get("hops", 0),
+        "created_at": _now(),
+    }
+    await db.turns.insert_one(dict(turn_doc))
+
+    # update session summary
+    await db.sessions.update_one(
+        {"id": body.session_id},
+        {"$set": {"updated_at": _now(), "last_agent": final_agent},
+         "$inc": {"message_count": 2}},
+    )
+
+    return ChatOut(
+        session_id=body.session_id,
+        agent=final_agent,
+        agent_color=AGENT_COLORS.get(final_agent, "#A1A1AA"),
+        response=response_text,
+        intent=state.get("intent"),
+        confidence=state.get("confidence"),
+        trace_events=state.get("trace_events", []),
+        tool_calls=state.get("tool_calls", []),
+    )
+
+
+@api.post("/sessions/{sid}/resolve")
+async def resolve(sid: str):
+    r = await db.sessions.update_one({"id": sid}, {"$set": {"status": "resolved", "updated_at": _now()}})
+    if r.matched_count == 0:
+        raise HTTPException(404, "not found")
+    return {"ok": True}
+
+
+@api.delete("/sessions/{sid}")
+async def delete_session(sid: str):
+    await db.sessions.delete_one({"id": sid})
+    await db.messages.delete_many({"session_id": sid})
+    await db.turns.delete_many({"session_id": sid})
+    return {"ok": True}
+
+
+app.include_router(api)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+
 @app.on_event("shutdown")
-async def shutdown_db_client():
+async def _shutdown():
+    flush_langfuse()
     client.close()
