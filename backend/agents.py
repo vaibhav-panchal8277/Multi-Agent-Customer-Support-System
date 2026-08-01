@@ -7,6 +7,7 @@ agent action, tool call, and hand-off is wrapped in a Langfuse span for tracing.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -18,21 +19,60 @@ from langgraph.graph import END, StateGraph
 
 from tools import TOOL_REGISTRY
 
+log = logging.getLogger("agents")
+
 # --- Config ---
 EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
 MODEL_NAME = "gpt-5.4-mini"
 MODEL_PROVIDER = "openai"
 
-# Langfuse client (auto-reads env vars). Safe if keys are set.
+# Langfuse client (auto-reads env vars). Safe if keys are missing/wrong.
 _langfuse: Optional[Langfuse] = None
-try:
-    _langfuse = Langfuse(
-        public_key=os.environ.get("LANGFUSE_PUBLIC_KEY"),
-        secret_key=os.environ.get("LANGFUSE_SECRET_KEY"),
-        host=os.environ.get("LANGFUSE_HOST", "https://us.cloud.langfuse.com"),
-    )
-except Exception:  # keys missing / network down: keep app running
-    _langfuse = None
+LANGFUSE_STATUS: Dict[str, Any] = {
+    "enabled": False,
+    "host": os.environ.get("LANGFUSE_HOST", "https://us.cloud.langfuse.com"),
+    "public_key_prefix": (os.environ.get("LANGFUSE_PUBLIC_KEY") or "")[:10],
+    "auth_ok": None,
+    "last_error": None,
+    "last_flush_ts": None,
+    "traces_sent": 0,
+}
+
+
+def _init_langfuse() -> None:
+    global _langfuse
+    pk = os.environ.get("LANGFUSE_PUBLIC_KEY")
+    sk = os.environ.get("LANGFUSE_SECRET_KEY")
+    host = os.environ.get("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
+    if not pk or not sk:
+        LANGFUSE_STATUS["last_error"] = "LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY missing"
+        log.warning("Langfuse disabled: %s", LANGFUSE_STATUS["last_error"])
+        return
+    try:
+        client = Langfuse(public_key=pk, secret_key=sk, host=host)
+        # Verify credentials against the configured host.
+        try:
+            ok = bool(client.auth_check())
+        except Exception as e:  # older SDKs raise instead of returning False
+            ok = False
+            LANGFUSE_STATUS["last_error"] = f"auth_check raised: {e}"
+        LANGFUSE_STATUS["auth_ok"] = ok
+        if ok:
+            _langfuse = client
+            LANGFUSE_STATUS["enabled"] = True
+            log.info("Langfuse initialised (host=%s, pk=%s...)", host, pk[:10])
+        else:
+            LANGFUSE_STATUS.setdefault(
+                "last_error",
+                "auth_check failed - keys may be from a different cluster than LANGFUSE_HOST",
+            )
+            log.error("Langfuse auth_check failed. host=%s pk=%s...", host, pk[:10])
+    except Exception as e:
+        LANGFUSE_STATUS["last_error"] = f"init error: {e}"
+        log.error("Langfuse init error: %s", e)
+
+
+_init_langfuse()
 
 
 # --- Graph state ---
@@ -388,29 +428,50 @@ async def run_turn(session_id: str, user_message: str,
         "hops": 0,
     }
 
-    # Wrap the whole turn in a Langfuse trace
+    # Wrap the whole turn in a Langfuse trace (v4 SDK API)
     if _langfuse is not None:
         try:
-            with _langfuse.start_as_current_span(
+            trace_metadata = {
+                "session_id": session_id,
+                "user_message": user_message,
+            }
+            with _langfuse.start_as_current_observation(
                 name="support_turn",
+                as_type="span",
                 input={"user_message": user_message, "session_id": session_id},
-            ) as span:
+                metadata=trace_metadata,
+            ) as obs:
                 final = await _GRAPH.ainvoke(initial, config={"recursion_limit": 20})
-                span.update_trace(
-                    session_id=session_id,
-                    output={
-                        "agent": final.get("current_agent_final") or final.get("current_agent"),
-                        "response": final.get("response", ""),
-                    },
+                final_agent = final.get("current_agent_final") or final.get("current_agent")
+                obs.update(
+                    output={"agent": final_agent, "response": final.get("response", "")},
                     metadata={
+                        **trace_metadata,
                         "intent": final.get("intent"),
                         "confidence": final.get("confidence"),
                         "tool_calls": final.get("tool_calls", []),
+                        "hops": final.get("hops", 0),
                     },
                 )
-                return final
-        except Exception:
-            pass  # fall through to plain run
+                # Set trace-level input/output so it shows up on the Traces list.
+                obs.set_trace_io(
+                    input={"user_message": user_message, "session_id": session_id},
+                    output={"agent": final_agent, "response": final.get("response", "")},
+                )
+            # Flush immediately so the trace appears in the UI on the next refresh
+            # instead of waiting for the SDK's background batch timer.
+            try:
+                _langfuse.flush()
+                LANGFUSE_STATUS["traces_sent"] = LANGFUSE_STATUS.get("traces_sent", 0) + 1
+                LANGFUSE_STATUS["last_flush_ts"] = time.time()
+                LANGFUSE_STATUS["last_error"] = None
+            except Exception as e:
+                LANGFUSE_STATUS["last_error"] = f"flush error: {e}"
+                log.warning("Langfuse flush failed: %s", e)
+            return final
+        except Exception as e:
+            LANGFUSE_STATUS["last_error"] = f"span error: {e}"
+            log.warning("Langfuse span failed, running graph without tracing: %s", e)
     return await _GRAPH.ainvoke(initial, config={"recursion_limit": 20})
 
 

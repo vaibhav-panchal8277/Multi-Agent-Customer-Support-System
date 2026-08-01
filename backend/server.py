@@ -18,7 +18,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 # import agents AFTER env is loaded
-from agents import AGENT_COLORS, flush_langfuse, run_turn  # noqa: E402
+from agents import AGENT_COLORS, LANGFUSE_STATUS, flush_langfuse, run_turn  # noqa: E402
 
 # --- Mongo ---
 mongo_url = os.environ["MONGO_URL"]
@@ -71,6 +71,15 @@ class ChatOut(BaseModel):
 @api.get("/")
 async def root():
     return {"ok": True, "service": "multi-agent-support", "model": "gpt-5.4-mini"}
+
+
+@api.get("/langfuse/status")
+async def langfuse_status():
+    """Diagnostic endpoint: shows whether Langfuse auth succeeded and how many
+    traces have been flushed since backend start. If auth_ok is false, your
+    LANGFUSE_HOST likely doesn't match the cluster where you created the keys.
+    """
+    return LANGFUSE_STATUS
 
 
 @api.get("/agents")
