@@ -51,6 +51,10 @@ __pycache__/
 *pyc*
 venv/
 .venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Development tools
 chainlit.md
@@ -83,6 +87,8 @@ android-sdk/
 .env
 .env.*
 *.env
+!.env.example
+!**/.env.example
 credentials.json
 *.key
 .credentials
