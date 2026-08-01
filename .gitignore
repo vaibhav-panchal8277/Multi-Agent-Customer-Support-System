@@ -87,12 +87,17 @@ memory/test_credentials.md
 .env
 .env.local
 .env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
 *.env
-!.env.example
-!**/.env.example
-!env.example
-!**/env.example
+.env.*
 credentials.json
 *.key
 .credentials
-.env.*
+
+# ---- Whitelist example templates (must come AFTER all exclude rules) ----
+!env.example
+!**/env.example
+!.env.example
+!**/.env.example
