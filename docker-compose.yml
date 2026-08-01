@@ -1,0 +1,21 @@
+# One-shot local dependency: MongoDB.
+# Usage:
+#   docker compose up -d       # start Mongo in background
+#   docker compose down        # stop
+#
+# After it's running your backend/.env should have:
+#   MONGO_URL="mongodb://localhost:27017"
+#   DB_NAME="support_platform"
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: mesh-support-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  mongo_data:

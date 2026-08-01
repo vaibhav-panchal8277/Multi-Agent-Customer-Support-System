@@ -68,7 +68,7 @@ call is traced through **Langfuse** for full observability.
 ### 1. Prerequisites
 - Python 3.11+
 - Node 18+ and Yarn (**not npm**)
-- A running MongoDB (`mongodb://localhost:27017` by default)
+- MongoDB — either installed locally, or the provided `docker-compose.yml`
 
 ### 2. Clone + configure
 ```bash
@@ -86,7 +86,12 @@ cp frontend/.env.example frontend/.env
 # REACT_APP_BACKEND_URL defaults to http://localhost:8001 for local dev
 ```
 
-### 3. Install
+### 3. Start MongoDB (skip if you already have one running)
+```bash
+docker compose up -d          # starts mongo on localhost:27017
+```
+
+### 4. Install
 ```bash
 # Backend
 cd backend
@@ -99,7 +104,7 @@ cd ../frontend
 yarn install
 ```
 
-### 4. Run
+### 5. Run
 ```bash
 # Terminal 1 — backend
 cd backend
