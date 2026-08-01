@@ -1,0 +1,117 @@
+{
+  "project_context": {
+    "app_type": "hybrid_fullstack",
+    "theme": "dark_mode",
+    "vibe": "Cybernetic Command Center & Sleek Concierge",
+    "design_archetype": "The Performance Pro mixed with Swiss Brutalist"
+  },
+  "typography": {
+    "headings": {
+      "font": "Outfit",
+      "import_url": "https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap",
+      "rules": "Use tight tracking (tracking-tight), never use Inter for headings. Keep weight contrast high (e.g., Light vs Bold)."
+    },
+    "body": {
+      "font": "IBM Plex Sans",
+      "import_url": "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500&display=swap",
+      "rules": "Left-aligned, line-height loose (leading-relaxed)."
+    },
+    "mono_data": {
+      "font": "JetBrains Mono",
+      "import_url": "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap",
+      "rules": "Use for all trace logs, latencies, node IDs, and tool calls. tracking-[0.05em] uppercase for overlines."
+    }
+  },
+  "colors": {
+    "background": {
+      "default": "#09090b",
+      "card": "#121214",
+      "glass": "rgba(9, 9, 11, 0.75)"
+    },
+    "agents": {
+      "supervisor": "#FFFFFF",
+      "billing": "#10b981",
+      "technical": "#0ea5e9",
+      "refunds": "#f59e0b"
+    },
+    "text": {
+      "primary": "#FAFAFA",
+      "secondary": "#A1A1AA",
+      "muted": "#71717A"
+    },
+    "rules": "Never use pure black or pure gray. Use zinc/slate tinted darks. Never use #7351B7 or #1B93A4. Agent colors must be used strategically for glowing accents, badges, and active trace borders, not as massive backgrounds."
+  },
+  "layouts": {
+    "customer_chat": {
+      "pattern": "Agent Control Surface",
+      "description": "Reject standard left/right iMessage bubbles. Use a vertical timeline/feed approach. AI responses should render as 'Cards' containing both the conversational text and a mini-activity feed showing the agent's actions (e.g. 'Supervisor routing to Billing...', 'Tool called: lookup_invoice').",
+      "spacing": "Generous. Use p-6 or p-8 for chat blocks to allow them to breathe."
+    },
+    "admin_dashboard": {
+      "pattern": "High Density Bento Grid",
+      "grid_classes": "grid grid-cols-1 md:grid-cols-4 lg:grid-cols-12 gap-6",
+      "description": "Every pixel utilized. Use h-full on children. Display traces as vertical node trees or Gantt-like latency bars.",
+      "surface": "Flat background, 1px subtle border (border-white/10), no drop-shadows. Retro-futuristic terminal touches for live logs."
+    }
+  },
+  "visual_enhancers": {
+    "tracing_beam": "Use for the active agent card or active handoff visualization. An animated border glow matching the agent's color (e.g. using Framer Motion to move a gradient along the border).",
+    "glassmorphism": "Use for sticky headers, Clarification Modals, and the chat input bar. backdrop-blur-2xl bg-zinc-950/60 border border-white/10.",
+    "grid_borders": "For the admin dashboard logs, use visible structural borders (border-r border-b border-white/5) to expose the skeletal layout."
+  },
+  "components_strategy": {
+    "buttons": "Sharp rectangular with 1px border or completely borderless with high-contrast background. Hover state must lift (-translate-y-1) and increase brightness.",
+    "avatars": "Do not use standard circle stock photos. Use abstract 3D nodes or minimalistic iconography surrounded by a colored glowing ring indicating the agent's active status.",
+    "chat_messages": "Flat, sharp edges with a subtle 4px or 0px rounding. Content must be structured (markdown, code blocks, tool receipts).",
+    "traces": "Use vertical steppers with JetBrains Mono for timestamps, latency, and tool invocations."
+  },
+  "motion": {
+    "handoff": "When agent changes, the new agent badge slides in from top with a subtle spring bounce. The old badge fades out. The trace beam color transitions smoothly.",
+    "loading": "Do not use generic spinners. Use sequential fading text 'Analyzing intent...', 'Routing...', 'Querying API...' or a geometric ASCII art loader.",
+    "page_transitions": "Staggered entrance for dashboard bento cards (delay 50-100ms per card)."
+  },
+  "accessibility": {
+    "contrast": "Ensure all text against dark backgrounds meets APCA/WCAG standards (e.g. text-zinc-400 or lighter on zinc-950).",
+    "testing": "All interactive elements MUST have data-testid in kebab-case."
+  },
+  "media": {
+    "image_urls": {
+      "dashboard_background": {
+        "url": "https://images.unsplash.com/photo-1683447551794-1c287cd42675?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzV8MHwxfHNlYXJjaHw0fHxhYnN0cmFjdCUyMG5vZGUlMjBuZXR3b3JrJTIwZGFya3xlbnwwfHx8fDE3ODU1NjE5NzB8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Network of dots for admin login or background accent layer (set to extremely low opacity like 5%)."
+      },
+      "trace_visualization_bg": {
+        "url": "https://images.unsplash.com/photo-1750969185331-e03829f72c7d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzV8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMG5vZGUlMjBuZXR3b3JrJTIwZGFya3xlbnwwfHx8fDE3ODU1NjE5NzB8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Abstract blue lines for the active trace path backdrop. Crop and overlay with dark mask."
+      },
+      "agent_avatar_tech": {
+        "url": "https://images.unsplash.com/photo-1740252117013-4fb21771e7ca?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjd8MHwxfHNlYXJjaHwyfHxwcm9mZXNzaW9uYWwlMjBhdmF0YXIlMjBwb3J0cmFpdHxlbnwwfHx8fDE3ODU1NjE5Njl8MA&ixlib=rb-4.1.0&q=85",
+        "description": "3D character avatar for Tech Support Agent (fallback representation)."
+      },
+      "agent_avatar_supervisor": {
+        "url": "https://images.pexels.com/photos/30766684/pexels-photo-30766684.png?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "3D gold/black abstract geometric structure to represent the central Supervisor Agent."
+      },
+      "agent_avatar_human_fallback": {
+        "url": "https://images.pexels.com/photos/30426363/pexels-photo-30426363.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Professional realistic portrait for human escalation routing."
+      }
+    }
+  },
+  "icons": {
+    "library": "lucide-react",
+    "usage": "Use crisp, minimalist icons. Avoid heavy filled icons. For tech/admin, size 16px to 20px."
+  },
+  "universal_guidelines": [
+    "You tend to converge toward generic outputs. DO NOT create a standard chat UI. This is an 'AI Command Center' that visualizes thought processes.",
+    "Use 2-3x more spacing than usual. Container padding should be p-8 instead of p-4.",
+    "Never apply `transition: all`. Target specific properties like `transition: transform 0.2s, opacity 0.2s`.",
+    "Do not center-align the main app container. Maintain strict left alignment for text to support reading speed.",
+    "Prioritize high-quality glass-morphism (backdrop-blur-xl bg-zinc-950/70) for overlays and sticky headers.",
+    "NEVER use fully transparent backgrounds behind text. Always use a solid or blurred scrim.",
+    "Add 'data-testid' to ALL interactive elements (buttons, inputs, tabs, message bubbles, trace nodes).",
+    "Create depth using z-index and subtle colored glows matching the active agent (e.g., #10b981 for Billing).",
+    "Do not use Shadcn default roundings or default generic borders. Customize with sharp edges (rounded-none or rounded-sm) and 1px white/10 borders.",
+    "Use sonner for toast notifications. Set toasts to use dark mode matching the application."
+  ]
+}
