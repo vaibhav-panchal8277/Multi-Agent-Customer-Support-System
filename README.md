@@ -76,15 +76,24 @@ git clone <your-repo-url> mesh-support
 cd mesh-support
 
 # --- Backend ---
-cp backend/.env.example backend/.env
+# The template ships as `env.example` (no leading dot, always visible).
+# Copy it and rename to `.env` (the actual file the app loads):
+cp backend/env.example backend/.env         # mac / linux
+# ren backend\env.example backend\.env      # windows cmd
+
 # then edit backend/.env and fill in:
 #   EMERGENT_LLM_KEY           (Emergent Universal Key)
 #   LANGFUSE_PUBLIC_KEY / SECRET_KEY / HOST
 
 # --- Frontend ---
-cp frontend/.env.example frontend/.env
+cp frontend/env.example frontend/.env       # mac / linux
+# ren frontend\env.example frontend\.env    # windows cmd
 # REACT_APP_BACKEND_URL defaults to http://localhost:8001 for local dev
 ```
+
+> **Why two names?** `backend/.env.example` (dotfile) and `backend/env.example`
+> (visible) have identical content — dotfiles get filtered out by some ZIP
+> tools and file managers, so we ship both. Use whichever you can see.
 
 ### 3. Start MongoDB (skip if you already have one running)
 ```bash

@@ -83,12 +83,15 @@ agenthub/agents/youtube/db
 memory/test_credentials.md
 
 # Mobile development
-android-sdk/
+# ---- Environment files (real secrets, never commit) ----
 .env
-.env.*
+.env.local
+.env.*.local
 *.env
 !.env.example
 !**/.env.example
+!env.example
+!**/env.example
 credentials.json
 *.key
 .credentials
