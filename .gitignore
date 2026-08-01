@@ -95,3 +95,4 @@ memory/test_credentials.md
 credentials.json
 *.key
 .credentials
+.env.*
