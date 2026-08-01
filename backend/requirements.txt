@@ -1,3 +1,7 @@
+# Emergent's private index for `emergentintegrations` — pip reads this line
+# and automatically fetches from it in addition to PyPI.
+--extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+
 # --- Core web stack ---
 fastapi==0.110.1
 uvicorn==0.25.0
@@ -16,8 +20,6 @@ langgraph==1.2.10
 langchain-core==1.5.3
 
 # --- LLM client (Emergent Universal Key) ---
-# emergentintegrations must be installed from Emergent's index:
-#   pip install emergentintegrations --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
 emergentintegrations==0.2.0
 
 # --- Observability ---

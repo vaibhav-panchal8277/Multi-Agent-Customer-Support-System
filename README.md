@@ -104,9 +104,8 @@ docker compose up -d          # starts mongo on localhost:27017
 ```bash
 # Backend
 cd backend
-pip install -r requirements.txt
-pip install emergentintegrations \
-  --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+pip install -r requirements.txt        # pulls emergentintegrations from Emergent's index automatically
+                                        # (the --extra-index-url line is inside requirements.txt)
 
 # Frontend
 cd ../frontend
