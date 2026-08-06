@@ -11,7 +11,7 @@
   },
   "verification_details": {
     "langfuse_status_endpoint_live": {
-      "url": "https://supervisor-mesh.preview.emergentagent.com/api/langfuse/status",
+      "url": "https://fervent-wescoff-15.preview.emergentagent.com/api/langfuse/status",
       "response": {
         "enabled": true,
         "host": "https://us.cloud.langfuse.com",
