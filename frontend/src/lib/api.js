@@ -51,6 +51,7 @@ export const AGENT_META = {
   technical:  { name: "Technical",  color: "#0ea5e9",  ring: "ring-technical",  cssVar: "--technical" },
   refunds:    { name: "Refunds",    color: "#f59e0b",  ring: "ring-refunds",    cssVar: "--refunds" },
   clarify:    { name: "Supervisor", color: "#a78bfa",  ring: "ring-clarify",    cssVar: "--clarify" },
+  guardrail:  { name: "Guardrail",  color: "#ef4444",  ring: "ring-guardrail",  cssVar: "--guardrail" },
 };
 
 export function metaFor(agent) {

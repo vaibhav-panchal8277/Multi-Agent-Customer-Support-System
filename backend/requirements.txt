@@ -25,6 +25,9 @@ emergentintegrations==0.2.0
 # --- Observability ---
 langfuse==4.14.2
 
+# --- Guardrails (NeMo) ---
+nemoguardrails==0.23.0
+
 # --- Dev / testing (optional) ---
 pytest>=8.0.0
 requests>=2.31.0

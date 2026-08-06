@@ -1,0 +1,17 @@
+# NeMo Guardrails config for MESH Support.
+# The main LLM is injected at runtime (Emergent GPT-5.4-mini) via LLMRails(llm=...).
+# We only use LLM-based self-check rails (no Colang intent matching), so no
+# embeddings model / vector index is required.
+colang_version: "1.0"
+
+rails:
+  input:
+    flows:
+      - self check input
+  output:
+    flows:
+      - self check output
+
+# When a rail blocks, raise a structured exception message (role="exception")
+# instead of a canned bot reply. This gives us a deterministic block signal.
+enable_rails_exceptions: true

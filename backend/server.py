@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ load_dotenv(ROOT_DIR / ".env")
 
 # import agents AFTER env is loaded
 from agents import AGENT_COLORS, LANGFUSE_STATUS, flush_langfuse, run_turn  # noqa: E402
+from guardrails_engine import GUARDRAILS_STATUS, check_input, check_output  # noqa: E402
 
 # --- Mongo ---
 mongo_url = os.environ["MONGO_URL"]
@@ -32,6 +34,24 @@ api = APIRouter(prefix="/api")
 # ---------- Models ----------
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _guardrail_event(which: str, r: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a trace-timeline event for a guardrail check."""
+    blocked = bool(r.get("blocked"))
+    label_prefix = "Input rail" if which == "input" else "Output rail"
+    label = f"{label_prefix} {'blocked' if blocked else 'passed'}"
+    return {
+        "agent": "guardrail",
+        "type": "guardrail",
+        "label": label,
+        "blocked": blocked,
+        "reason": r.get("reason"),
+        "rail": r.get("rail"),
+        "latency_ms": r.get("latency_ms"),
+        "color": "#ef4444" if blocked else "#22d3ee",
+        "ts": time.time(),
+    }
 
 
 class SessionCreate(BaseModel):
@@ -80,6 +100,12 @@ async def langfuse_status():
     LANGFUSE_HOST likely doesn't match the cluster where you created the keys.
     """
     return LANGFUSE_STATUS
+
+
+@api.get("/guardrails/status")
+async def guardrails_status():
+    """Diagnostic endpoint: NeMo Guardrails state + counters (checks run / blocks)."""
+    return GUARDRAILS_STATUS
 
 
 @api.get("/agents")
@@ -167,10 +193,43 @@ async def chat(body: ChatIn):
     }
     await db.messages.insert_one(dict(user_msg))
 
-    # run graph
-    state = await run_turn(body.session_id, body.message, history)
-    response_text = state.get("response", "…")
-    final_agent = state.get("current_agent_final") or "supervisor"
+    # ---- Guardrails: input rail (block jailbreak / unsafe / off-topic) ----
+    gr_in = await check_input(body.message)
+    trace_events: List[Dict[str, Any]] = [_guardrail_event("input", gr_in)]
+
+    if gr_in.get("blocked"):
+        response_text = (
+            "I'm sorry, but I can only help with billing, technical, refund, and "
+            "account questions — so I can't help with that request. Is there something "
+            "about your account, an invoice, or a recent order I can look into?"
+        )
+        final_agent = "guardrail"
+        intent = "blocked"
+        confidence = None
+        tool_calls: List[Dict[str, Any]] = []
+        hops = 0
+    else:
+        # run graph
+        state = await run_turn(body.session_id, body.message, history)
+        response_text = state.get("response", "…")
+        final_agent = state.get("current_agent_final") or "supervisor"
+        intent = state.get("intent")
+        confidence = state.get("confidence")
+        tool_calls = state.get("tool_calls", [])
+        hops = state.get("hops", 0)
+        trace_events = trace_events + state.get("trace_events", [])
+
+        # ---- Guardrails: output rail (moderate the final answer) ----
+        gr_out = await check_output(body.message, response_text)
+        trace_events = trace_events + [_guardrail_event("output", gr_out)]
+        if gr_out.get("blocked"):
+            response_text = (
+                "I'm sorry — I wasn't able to produce a response I can safely share here. "
+                "If this is urgent I can escalate you to a human agent."
+            )
+            final_agent = "guardrail"
+
+    agent_color = "#ef4444" if final_agent == "guardrail" else AGENT_COLORS.get(final_agent, "#A1A1AA")
 
     # persist assistant message
     asst_msg = {
@@ -179,11 +238,11 @@ async def chat(body: ChatIn):
         "role": "assistant",
         "content": response_text,
         "agent": final_agent,
-        "agent_color": AGENT_COLORS.get(final_agent, "#A1A1AA"),
-        "intent": state.get("intent"),
-        "confidence": state.get("confidence"),
-        "trace_events": state.get("trace_events", []),
-        "tool_calls": state.get("tool_calls", []),
+        "agent_color": agent_color,
+        "intent": intent,
+        "confidence": confidence,
+        "trace_events": trace_events,
+        "tool_calls": tool_calls,
         "created_at": _now(),
     }
     await db.messages.insert_one(dict(asst_msg))
@@ -195,11 +254,11 @@ async def chat(body: ChatIn):
         "user_message": body.message,
         "response": response_text,
         "agent": final_agent,
-        "intent": state.get("intent"),
-        "confidence": state.get("confidence"),
-        "trace_events": state.get("trace_events", []),
-        "tool_calls": state.get("tool_calls", []),
-        "hops": state.get("hops", 0),
+        "intent": intent,
+        "confidence": confidence,
+        "trace_events": trace_events,
+        "tool_calls": tool_calls,
+        "hops": hops,
         "created_at": _now(),
     }
     await db.turns.insert_one(dict(turn_doc))
@@ -214,12 +273,12 @@ async def chat(body: ChatIn):
     return ChatOut(
         session_id=body.session_id,
         agent=final_agent,
-        agent_color=AGENT_COLORS.get(final_agent, "#A1A1AA"),
+        agent_color=agent_color,
         response=response_text,
-        intent=state.get("intent"),
-        confidence=state.get("confidence"),
-        trace_events=state.get("trace_events", []),
-        tool_calls=state.get("tool_calls", []),
+        intent=intent,
+        confidence=confidence,
+        trace_events=trace_events,
+        tool_calls=tool_calls,
     )
 
 

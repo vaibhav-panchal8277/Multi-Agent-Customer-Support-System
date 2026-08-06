@@ -1,5 +1,5 @@
 import { metaFor } from "@/lib/api";
-import { Bot, Wrench, Receipt, Undo2, Compass } from "lucide-react";
+import { Bot, Wrench, Receipt, Undo2, Compass, ShieldAlert } from "lucide-react";
 
 const ICONS = {
   supervisor: Compass,
@@ -7,6 +7,7 @@ const ICONS = {
   technical: Wrench,
   refunds: Undo2,
   clarify: Compass,
+  guardrail: ShieldAlert,
 };
 
 export function AgentBadge({ agent = "supervisor", size = "md", subtle = false, testId }) {
