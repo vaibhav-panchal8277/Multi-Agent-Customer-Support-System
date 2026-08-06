@@ -5,10 +5,12 @@ A **Supervisor Agent** classifies every incoming customer message and hands it
 off to a specialist sub-agent (**Billing**, **Technical Support**, **Refunds**),
 each with its own prompt and tool set. Conversation state persists across
 hand-offs so the customer never has to repeat themselves, and every hop / tool
-call is traced through **Langfuse** for full observability.
+call is traced through **Langfuse** for full observability. Every turn is wrapped
+in **NeMo Guardrails** input/output rails that block jailbreaks, off-topic
+requests, and unsafe replies.
 
 <p align="center">
-  <em>Supervisor → routes → Billing / Technical / Refunds → tools → reply, all traced.</em>
+  <em>Guardrails → Supervisor → routes → Billing / Technical / Refunds → tools → Guardrails → reply, all traced.</em>
 </p>
 
 ---
@@ -18,6 +20,7 @@ call is traced through **Langfuse** for full observability.
 - **LangGraph** state machine — explicit nodes + conditional edges instead of hidden agent self-reasoning.
 - **Per-agent isolated memory** — only a summary is forwarded on hand-off, keeping token cost predictable.
 - **Confidence-gated fallback** — low-confidence classifications trigger a clarifying question instead of a blind route.
+- **NeMo Guardrails** — LLM-based input rail (jailbreak / prompt-injection + off-topic filtering) and output rail (moderation), running on the same Emergent LLM. Blocks short-circuit the graph and surface as red shield events in the timeline.
 - **Mock tool APIs** — invoices, tickets, refund rules engine (`tools.py`). Swap for real Stripe / Zendesk when ready.
 - **Full observability** — Langfuse v3 spans per turn + local trace timeline surfaced in an admin dashboard.
 - **Dark "Command Center" UI** — customer chat with per-message activity feed + `/admin` bento dashboard.
@@ -30,6 +33,7 @@ call is traced through **Langfuse** for full observability.
 |------------------|---------------------------------------------------------------|
 | Orchestration    | LangGraph 1.x                                                 |
 | LLM              | GPT-5.4-mini via `emergentintegrations` (Emergent Universal Key) |
+| Guardrails       | NeMo Guardrails 0.23 (self-check input/output rails)          |
 | Backend          | FastAPI + Motor (async MongoDB)                               |
 | Memory / state   | MongoDB (`sessions`, `messages`, `turns` collections)         |
 | Observability    | Langfuse v3 (Python SDK)                                      |
@@ -46,6 +50,10 @@ call is traced through **Langfuse** for full observability.
 │   ├── server.py          # FastAPI routes, Mongo persistence
 │   ├── agents.py          # LangGraph StateGraph + Langfuse tracing
 │   ├── tools.py           # Mock invoices / tickets / refund rules engine
+│   ├── guardrails_engine.py       # NeMo Guardrails engine + Emergent LLM wrapper
+│   ├── guardrails_config/         # NeMo config
+│   │   ├── config.yml             #   rails: self check input / output
+│   │   └── prompts.yml            #   input/output safety prompts
 │   ├── requirements.txt
 │   └── .env.example
 ├── frontend/
@@ -131,6 +139,12 @@ Open **http://localhost:3000** for the chat and **http://localhost:3000/admin** 
 
 ```
               ┌─────────────────────────┐
+              │   Guardrails: INPUT     │
+              │ jailbreak/off-topic gate │
+              └──────────┬──────────────┘
+                         │ (allowed)
+                         ▼
+              ┌─────────────────────────┐
               │      Supervisor         │
               │  (classify + route)     │
               └──────────┬──────────────┘
@@ -144,12 +158,19 @@ Open **http://localhost:3000** for the chat and **http://localhost:3000/admin** 
                  │  handoff back to Supervisor if
                  │  the query drifts out of scope
                  ▼
-                END
+              ┌─────────────────────────┐
+              │   Guardrails: OUTPUT    │
+              │  moderate final reply   │
+              └──────────┬──────────────┘
+                         ▼
+                        END
 ```
 
+- The **input rail** runs first; if it blocks, the graph never executes and the customer gets a polite refusal (`agent="guardrail"`).
 - Each sub-agent may (a) call a tool, (b) answer the customer, or (c) hand back to Supervisor.
 - Hand-off carries a **short summary**, not the full history — keeps context lean.
 - Confidence < 0.55 → Supervisor asks a clarifying question instead of guessing.
+- The **output rail** moderates the final reply before it reaches the user.
 
 Read `backend/agents.py` for the full definition; every node updates a
 `ChatState` TypedDict and appends a structured `trace_events` array that the
@@ -167,6 +188,8 @@ frontend renders as an activity feed.
 | GET    | `/api/sessions`                    | List all conversations                     |
 | GET    | `/api/sessions/{id}`               | Session detail + messages                  |
 | GET    | `/api/sessions/{id}/traces`        | Per-turn trace events (admin dashboard)    |
+| GET    | `/api/langfuse/status`             | Langfuse auth / flush diagnostics          |
+| GET    | `/api/guardrails/status`           | NeMo Guardrails state + block counters     |
 | POST   | `/api/chat`                        | Send a message, run the graph              |
 | POST   | `/api/sessions/{id}/resolve`       | Mark ticket resolved                       |
 | DELETE | `/api/sessions/{id}`               | Delete session + messages                  |
@@ -222,6 +245,47 @@ keeps working.
 
 ---
 
+## Guardrails with NeMo
+
+Every `POST /api/chat` turn is wrapped in [NeMo Guardrails](https://github.com/NVIDIA-NeMo/Guardrails):
+
+- **Input rail** (`self check input`) — an LLM classifier blocks jailbreak /
+  prompt-injection attempts, unsafe content, and **off-topic** messages (anything
+  outside billing / technical / refunds / general support). If it blocks, the
+  LangGraph never runs and the customer gets a polite refusal.
+- **Output rail** (`self check output`) — moderates the assistant's final answer
+  before it reaches the user. It is deliberately tuned to **allow** the customer's
+  own account/invoice/refund data (that's the job) while blocking system-prompt or
+  credential leaks, abuse, and unsafe content.
+
+The rails run on the **same Emergent GPT-5.4-mini** — it's wrapped as a LangChain
+`LLM` and injected directly:
+
+```python
+from nemoguardrails import LLMRails, RailsConfig
+
+cfg = RailsConfig.from_path("guardrails_config")
+rails = LLMRails(cfg, llm=EmergentLLM(api_key=EMERGENT_LLM_KEY))
+
+# input rail only, before the graph runs
+result = await rails.generate_async(
+    messages=[{"role": "user", "content": user_message}],
+    options=GenerationOptions(rails=["input"], log={"activated_rails": True}),
+)
+```
+
+Config lives in `backend/guardrails_config/` (`config.yml` + `prompts.yml`). The
+rails are **LLM-only** (no embeddings / vector index needed) and
+`enable_rails_exceptions` gives a deterministic block signal. A blocked turn
+returns `agent="guardrail"` and emits a red shield `guardrail` trace event that
+renders in both the chat activity feed and the `/admin` timeline. Guardrail errors
+**fail open** (allow) so the safety layer can never take chat down — check
+`GET /api/guardrails/status` for the `enabled` flag and `checks_run` / `blocks`
+counters. Optional env `GUARDRAILS_MODEL` overrides the guardrail model (defaults
+to `gpt-5.4-mini`).
+
+---
+
 ## Try it (curl)
 
 ```bash
@@ -238,6 +302,11 @@ curl -s -X POST $API/chat -H 'Content-Type: application/json' \
 # 3. Refund query — 30-day rules engine
 curl -s -X POST $API/chat -H 'Content-Type: application/json' \
   -d "{\"session_id\":\"$SID\",\"message\":\"Refund INV-1001, cancelled last week\"}" | jq
+
+# 4. Guardrail block — off-topic message never reaches the agents
+curl -s -X POST $API/chat -H 'Content-Type: application/json' \
+  -d "{\"session_id\":\"$SID\",\"message\":\"Who should I vote for in the election?\"}" | jq
+# -> agent: "guardrail", intent: "blocked", polite refusal
 ```
 
 Mock invoices you can play with (see `backend/tools.py`):
@@ -260,6 +329,7 @@ Mock invoices you can play with (see `backend/tools.py`):
 
 ## Roadmap
 
+- [x] NeMo Guardrails input/output rails (jailbreak, off-topic, moderation)
 - [ ] SSE streaming of agent responses (word-by-word)
 - [ ] Human-escalation node when the graph loops
 - [ ] Real Stripe test refunds behind the rules engine
