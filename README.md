@@ -20,7 +20,7 @@ requests, and unsafe replies.
 - **LangGraph** state machine — explicit nodes + conditional edges instead of hidden agent self-reasoning.
 - **Per-agent isolated memory** — only a summary is forwarded on hand-off, keeping token cost predictable.
 - **Confidence-gated fallback** — low-confidence classifications trigger a clarifying question instead of a blind route.
-- **NeMo Guardrails** — LLM-based input rail (jailbreak / prompt-injection + off-topic filtering) and output rail (moderation), running on the same Emergent LLM. Blocks short-circuit the graph and surface as red shield events in the timeline.
+- **NeMo Guardrails** — LLM-based input rail (jailbreak / prompt-injection + off-topic filtering) and output rail (moderation), running on the same Groq LLM (GPT-OSS 120B). Blocks short-circuit the graph and surface as red shield events in the timeline.
 - **Mock tool APIs** — invoices, tickets, refund rules engine (`tools.py`). Swap for real Stripe / Zendesk when ready.
 - **Full observability** — Langfuse v3 spans per turn + local trace timeline surfaced in an admin dashboard.
 - **Dark "Command Center" UI** — customer chat with per-message activity feed + `/admin` bento dashboard.
@@ -32,7 +32,7 @@ requests, and unsafe replies.
 | Layer            | Tech                                                          |
 |------------------|---------------------------------------------------------------|
 | Orchestration    | LangGraph 1.x                                                 |
-| LLM              | GPT-5.4-mini via `emergentintegrations` (Emergent Universal Key) |
+| LLM              | GPT-OSS 120B (`openai/gpt-oss-120b`) via the Groq API (`groq` SDK) |
 | Guardrails       | NeMo Guardrails 0.23 (self-check input/output rails)          |
 | Backend          | FastAPI + Motor (async MongoDB)                               |
 | Memory / state   | MongoDB (`sessions`, `messages`, `turns` collections)         |
@@ -50,7 +50,7 @@ requests, and unsafe replies.
 │   ├── server.py          # FastAPI routes, Mongo persistence
 │   ├── agents.py          # LangGraph StateGraph + Langfuse tracing
 │   ├── tools.py           # Mock invoices / tickets / refund rules engine
-│   ├── guardrails_engine.py       # NeMo Guardrails engine + Emergent LLM wrapper
+│   ├── guardrails_engine.py       # NeMo Guardrails engine + Groq LLM wrapper
 │   ├── guardrails_config/         # NeMo config
 │   │   ├── config.yml             #   rails: self check input / output
 │   │   └── prompts.yml            #   input/output safety prompts
@@ -90,7 +90,7 @@ cp backend/env.example backend/.env         # mac / linux
 # ren backend\env.example backend\.env      # windows cmd
 
 # then edit backend/.env and fill in:
-#   EMERGENT_LLM_KEY           (Emergent Universal Key)
+#   GROQ_API_KEY               (Groq API key from console.groq.com)
 #   LANGFUSE_PUBLIC_KEY / SECRET_KEY / HOST
 
 # --- Frontend ---
@@ -112,8 +112,7 @@ docker compose up -d          # starts mongo on localhost:27017
 ```bash
 # Backend
 cd backend
-pip install -r requirements.txt        # pulls emergentintegrations from Emergent's index automatically
-                                        # (the --extra-index-url line is inside requirements.txt)
+pip install -r requirements.txt        # installs the groq SDK + deps from PyPI
 
 # Frontend
 cd ../frontend
@@ -258,14 +257,14 @@ Every `POST /api/chat` turn is wrapped in [NeMo Guardrails](https://github.com/N
   own account/invoice/refund data (that's the job) while blocking system-prompt or
   credential leaks, abuse, and unsafe content.
 
-The rails run on the **same Emergent GPT-5.4-mini** — it's wrapped as a LangChain
+The rails run on the **same Groq GPT-OSS 120B** — it's wrapped as a LangChain
 `LLM` and injected directly:
 
 ```python
 from nemoguardrails import LLMRails, RailsConfig
 
 cfg = RailsConfig.from_path("guardrails_config")
-rails = LLMRails(cfg, llm=EmergentLLM(api_key=EMERGENT_LLM_KEY))
+rails = LLMRails(cfg, llm=GroqLLM(api_key=GROQ_API_KEY))
 
 # input rail only, before the graph runs
 result = await rails.generate_async(
@@ -282,7 +281,7 @@ renders in both the chat activity feed and the `/admin` timeline. Guardrail erro
 **fail open** (allow) so the safety layer can never take chat down — check
 `GET /api/guardrails/status` for the `enabled` flag and `checks_run` / `blocks`
 counters. Optional env `GUARDRAILS_MODEL` overrides the guardrail model (defaults
-to `gpt-5.4-mini`).
+to `openai/gpt-oss-120b`).
 
 ---
 
@@ -334,7 +333,7 @@ Mock invoices you can play with (see `backend/tools.py`):
 - [ ] Human-escalation node when the graph loops
 - [ ] Real Stripe test refunds behind the rules engine
 - [ ] Deep-link each admin turn into its Langfuse trace
-- [ ] JWT / Emergent-managed Google auth for the admin dashboard
+- [ ] JWT / Google OAuth for the admin dashboard
 
 ---
 

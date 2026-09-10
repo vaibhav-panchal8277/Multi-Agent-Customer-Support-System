@@ -3,7 +3,7 @@
 Runs a labeled set of customer messages through the graph and reports:
   * routing accuracy    (Supervisor picked the right sub-agent)
   * tool-call precision (right tool used on cases where a tool is expected)
-  * latency p50/p95     (per turn, real Emergent LLM calls)
+  * latency p50/p95     (per turn, real Groq LLM calls)
   * clarify fallback    (low-confidence -> clarifying question)
 
 Run:

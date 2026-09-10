@@ -11,7 +11,7 @@
   },
   "verification_details": {
     "langfuse_status_endpoint_live": {
-      "url": "https://fervent-wescoff-15.preview.emergentagent.com/api/langfuse/status",
+      "url": "http://localhost:8001/api/langfuse/status",
       "response": {
         "enabled": true,
         "host": "https://us.cloud.langfuse.com",
@@ -23,10 +23,10 @@
       }
     },
     "traces_increment_evidence": "Observed traces_sent go 0 -> 1 after single chat, then strictly increased (+1 per chat) across 4 additional chats in test_multiple_chats_increment_each_time. Cumulative counter at end of suite = 20. last_flush_ts monotonic non-decreasing.",
-    "chat_schema_intact": "POST /api/chat 'Please refund INV-1001, I cancelled last week.' -> agent=refunds, intent=refunds, tool_calls contains check_refund_eligibility, trace_events populated, real Emergent LLM (gpt-5.4-mini) latencies recorded. Langfuse instrumentation did NOT break the response.",
+    "chat_schema_intact": "POST /api/chat 'Please refund INV-1001, I cancelled last week.' -> agent=refunds, intent=refunds, tool_calls contains check_refund_eligibility, trace_events populated, real Groq LLM (openai/gpt-oss-120b) latencies recorded. Langfuse instrumentation did NOT break the response.",
     "error_surfacing": "last_error remains null after every chat, proving the try/except in run_turn is not catching any v3->v4 API mismatch. If the old start_as_current_span/update_trace calls were still in place, last_error would be populated on the first chat (it isn't).",
     "unchanged_endpoints": {
-      "GET /api/": "200 -> {ok:true, service:multi-agent-support, model:gpt-5.4-mini}",
+      "GET /api/": "200 -> {ok:true, service:multi-agent-support, model:openai/gpt-oss-120b}",
       "GET /api/agents": "200 -> 4 agents (supervisor/billing/technical/refunds) with colors",
       "POST /api/sessions": "200 -> id returned",
       "GET /api/sessions": "200 -> list ordered by updated_at desc",
@@ -51,7 +51,7 @@
     "/app/backend/tests/test_langfuse.py (new - 5 Langfuse-focused tests)"
   ],
   "success_rate": {"backend": "100% (21/21 pytest)", "frontend": "N/A (skipped per request)"},
-  "test_credentials": "N/A - no auth flow. EMERGENT_LLM_KEY (universal) and LANGFUSE_* (user_provided_key, host=us.cloud.langfuse.com, pk-lf-15b0...) in /app/backend/.env are valid and verified live.",
+  "test_credentials": "N/A - no auth flow. GROQ_API_KEY (universal) and LANGFUSE_* (user_provided_key, host=us.cloud.langfuse.com, pk-lf-15b0...) in /app/backend/.env are valid and verified live.",
   "seed_data_creation": "Test sessions prefixed with TEST_lf_* created and torn down by fixture. Used in-memory mock invoice INV-1001/INV-1002 for tool_call verification.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

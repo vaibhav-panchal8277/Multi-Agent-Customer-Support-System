@@ -1,6 +1,6 @@
 """NeMo Guardrails integration for MESH Support.
 
-Wraps the Emergent Universal-Key LLM (GPT-5.4-mini) as a LangChain-compatible model
+Wraps Groq's openai/gpt-oss-120b as a LangChain-compatible model
 and feeds it into a NeMo `LLMRails` engine that runs LLM-based self-check rails:
   * input rail  -> blocks jailbreak / prompt-injection / unsafe / off-topic messages
   * output rail -> moderates the assistant's final answer before it reaches the user
@@ -19,53 +19,77 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.language_models.llms import LLM
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from groq import AsyncGroq
 
 log = logging.getLogger("guardrails")
 
-EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
-GUARD_MODEL = os.environ.get("GUARDRAILS_MODEL", "gpt-5.4-mini")
-GUARD_PROVIDER = os.environ.get("GUARDRAILS_PROVIDER", "openai")
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+GUARD_MODEL = os.environ.get("GUARDRAILS_MODEL",
+                             os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"))
+
+# Shared async Groq client backing the rails LLM.
+_groq = AsyncGroq(api_key=GROQ_API_KEY)
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "guardrails_config")
 
 GUARDRAILS_STATUS: Dict[str, Any] = {
     "enabled": False,
     "model": GUARD_MODEL,
-    "error": None,
+    "error": None,          # init-time error
     "checks_run": 0,
     "blocks": 0,
+    "errors": 0,            # runtime rail errors (fail-open events)
+    "last_error": None,     # most recent fail-open reason, for observability
 }
 
 
-class EmergentLLM(LLM):
-    """Minimal LangChain text LLM backed by the Emergent Universal Key."""
+class GroqLLM(LLM):
+    """Minimal LangChain text LLM backed by the Groq API."""
 
     api_key: str
     model: str = GUARD_MODEL
-    provider: str = GUARD_PROVIDER
 
     @property
     def _llm_type(self) -> str:  # noqa: D401
-        return "emergent"
+        return "groq"
 
     async def _acall(self, prompt: str, stop: Optional[List[str]] = None,
                      run_manager: Any = None, **kwargs: Any) -> str:
-        chat = LlmChat(
-            api_key=self.api_key,
-            session_id="guardrails-check",
-            system_message=(
-                "You are a strict content-safety classifier. "
-                "Reply with only one word: 'yes' or 'no'."
-            ),
-        ).with_model(self.provider, self.model)
-        resp = await chat.send_message(UserMessage(text=prompt))
-        return resp if isinstance(resp, str) else str(resp)
+        resp = await _groq.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": (
+                    "You are a strict content-safety classifier. "
+                    "Reply with only one word: 'yes' or 'no'."
+                )},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+        )
+        out = resp.choices[0].message.content
+        return out if isinstance(out, str) else str(out)
 
     def _call(self, prompt: str, stop: Optional[List[str]] = None,
               run_manager: Any = None, **kwargs: Any) -> str:
-        return asyncio.get_event_loop().run_until_complete(
-            self._acall(prompt, stop, run_manager, **kwargs)
-        )
+        """Synchronous bridge to ``_acall`` that is safe under a running loop.
+
+        NeMo may invoke this sync method from inside the server's async event
+        loop. The old ``get_event_loop().run_until_complete(...)`` raises
+        "event loop is already running" there, and that error was then swallowed
+        by the fail-open handler, silently disabling the rail (issue L3). We
+        instead detect a running loop and, if present, drive the coroutine to
+        completion on a dedicated worker thread.
+        """
+        def _run() -> str:
+            return asyncio.run(self._acall(prompt, stop, run_manager, **kwargs))
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return _run()  # no loop active in this thread -> safe to run directly
+
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            return ex.submit(_run).result()
 
 
 _rails = None
@@ -77,7 +101,7 @@ def _init() -> None:
         from nemoguardrails import LLMRails, RailsConfig
 
         cfg = RailsConfig.from_path(CONFIG_PATH)
-        _rails = LLMRails(cfg, llm=EmergentLLM(api_key=EMERGENT_LLM_KEY))
+        _rails = LLMRails(cfg, llm=GroqLLM(api_key=GROQ_API_KEY))
         GUARDRAILS_STATUS["enabled"] = True
         GUARDRAILS_STATUS["error"] = None
         log.info("NeMo Guardrails initialised (model=%s)", GUARD_MODEL)
@@ -149,6 +173,8 @@ async def _generate(messages: List[Dict[str, str]], which: str) -> Dict[str, Any
         }
     except Exception as e:  # fail-open
         log.error("Guardrails %s check error: %s", which, e)
+        GUARDRAILS_STATUS["errors"] = GUARDRAILS_STATUS.get("errors", 0) + 1
+        GUARDRAILS_STATUS["last_error"] = f"{which} rail error: {e}"
         return {"allowed": True, "blocked": False, "rail": None,
                 "reason": f"error (fail-open): {e}",
                 "latency_ms": int((time.time() - started) * 1000)}

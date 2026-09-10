@@ -1,5 +1,5 @@
 {
-  "summary": "Gitignore packaging fix verified. All 4 env template files are now TRACKED in git (backend/env.example, backend/.env.example, frontend/env.example, frontend/.env.example). Real secret files remain properly ignored (backend/.env, frontend/.env both matched by rule `*.env` on line 93). Whitelist rules are correctly placed AFTER exclude rules (lines 100-103 come after 87-97), so last-match-wins works. Backend runtime unaffected: GET /api/ returns model=gpt-5.4-mini; POST /api/sessions + POST /api/chat with 'What is invoice INV-1001?' correctly routes to agent=billing (confidence=0.97) with tool_call=lookup_invoice(invoice_id=INV-1001) returning real invoice data. Real Emergent LLM (gpt-5.4-mini) end-to-end confirmed with meaningful natural-language response.",
+  "summary": "Gitignore packaging fix verified. All 4 env template files are now TRACKED in git (backend/env.example, backend/.env.example, frontend/env.example, frontend/.env.example). Real secret files remain properly ignored (backend/.env, frontend/.env both matched by rule `*.env` on line 93). Whitelist rules are correctly placed AFTER exclude rules (lines 100-103 come after 87-97), so last-match-wins works. Backend runtime unaffected: GET /api/ returns model=openai/gpt-oss-120b; POST /api/sessions + POST /api/chat with 'What is invoice INV-1001?' correctly routes to agent=billing (confidence=0.97) with tool_call=lookup_invoice(invoice_id=INV-1001) returning real invoice data. Real Groq LLM (openai/gpt-oss-120b) end-to-end confirmed with meaningful natural-language response.",
   "backend_issues": {
     "critical": [],
     "minor": []
@@ -32,9 +32,9 @@
       "status": "CORRECT - whitelist AFTER excludes; last-match-wins now applies to templates"
     },
     "runtime_smoke": {
-      "GET /api/": "200 -> {ok:true, service:multi-agent-support, model:gpt-5.4-mini}",
+      "GET /api/": "200 -> {ok:true, service:multi-agent-support, model:openai/gpt-oss-120b}",
       "POST /api/sessions": "200 -> session id returned",
-      "POST /api/chat (What is invoice INV-1001?)": "200 -> agent=billing, intent=billing, confidence=0.97, tool_calls[0]={tool:lookup_invoice, args:{invoice_id:INV-1001}, result contains real invoice data amount=$79, status=paid}, real Emergent LLM (gpt-5.4-mini) response generated (latencies 948ms classify + 772ms reason + 985ms final)"
+      "POST /api/chat (What is invoice INV-1001?)": "200 -> agent=billing, intent=billing, confidence=0.97, tool_calls[0]={tool:lookup_invoice, args:{invoice_id:INV-1001}, result contains real invoice data amount=$79, status=paid}, real Groq LLM (openai/gpt-oss-120b) response generated (latencies 948ms classify + 772ms reason + 985ms final)"
     }
   },
   "test_report_links": [],
@@ -42,7 +42,7 @@
   "critical_code_review_comments": [],
   "updated_files": [],
   "success_rate": {"backend": "100%", "frontend": "N/A (skipped per request)"},
-  "test_credentials": "N/A - no auth flow in scope. EMERGENT_LLM_KEY and LANGFUSE_* keys in /app/backend/.env are configured and verified working via real LLM call.",
+  "test_credentials": "N/A - no auth flow in scope. GROQ_API_KEY and LANGFUSE_* keys in /app/backend/.env are configured and verified working via real LLM call.",
   "seed_data_creation": "None - used existing in-memory mock invoice INV-1001",
   "retest_needed": false,
   "should_main_agent_self_test": false,

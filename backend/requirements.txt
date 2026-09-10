@@ -1,7 +1,3 @@
-# Emergent's private index for `emergentintegrations` — pip reads this line
-# and automatically fetches from it in addition to PyPI.
---extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
-
 # --- Core web stack ---
 fastapi==0.110.1
 uvicorn==0.25.0
@@ -19,8 +15,8 @@ pydantic>=2.6.4
 langgraph==1.2.10
 langchain-core==1.5.3
 
-# --- LLM client (Emergent Universal Key) ---
-emergentintegrations==0.2.0
+# --- LLM client (Groq) ---
+groq>=0.11.0
 
 # --- Observability ---
 langfuse==4.14.2

@@ -1,5 +1,5 @@
 # NeMo Guardrails config for MESH Support.
-# The main LLM is injected at runtime (Emergent GPT-5.4-mini) via LLMRails(llm=...).
+# The main LLM is injected at runtime (Groq GPT-OSS 120B) via LLMRails(llm=...).
 # We only use LLM-based self-check rails (no Colang intent matching), so no
 # embeddings model / vector index is required.
 colang_version: "1.0"

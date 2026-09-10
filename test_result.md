@@ -10,10 +10,10 @@
 
 user_problem_statement: |
   Existing MESH Support (multi-agent customer support platform: Supervisor routes to
-  Billing/Technical/Refunds sub-agents via LangGraph, GPT-5.4-mini through Emergent key,
+  Billing/Technical/Refunds sub-agents via LangGraph, GPT-OSS 120B through the Groq API,
   Langfuse tracing). New request: implement NeMo Guardrails.
   Scope confirmed (1a): input rail (jailbreak/prompt-injection + off-topic filtering) AND
-  output rail (moderation) using the existing Emergent GPT-5.4-mini as the guardrail LLM.
+  output rail (moderation) using the same Groq GPT-OSS 120B as the guardrail LLM.
   Blocked messages return a polite refusal and surface a "guardrail" event in the activity
   feed + admin trace timeline.
 
@@ -29,7 +29,7 @@ backend:
       - working: "NA"
         agent: "main"
         comment: |
-          Added NeMo Guardrails 0.23.0. Emergent LLM (GPT-5.4-mini) wrapped as a LangChain
+          Added NeMo Guardrails 0.23.0. Groq LLM (GPT-OSS 120B) wrapped as a LangChain
           LLM and injected via LLMRails(llm=...). Config uses self_check_input +
           self_check_output (LLM-only, no embeddings). enable_rails_exceptions=true for a
           deterministic block signal. /api/chat now runs input rail before the graph and
@@ -57,7 +57,7 @@ backend:
           - Graph did NOT execute (no classify/tool events) ✅
           
           ✅ GUARDRAILS STATUS:
-          - GET /api/guardrails/status returns {"enabled": true, "model": "gpt-5.4-mini"}
+          - GET /api/guardrails/status returns {"enabled": true, "model": "openai/gpt-oss-120b"}
           - Counters incremented correctly: checks_run (3→9), blocks (1→3)
           
           ✅ EDGE CASES (10/10 passed):
@@ -168,7 +168,7 @@ agent_communication:
          - Both: agent=guardrail, intent=blocked, polite refusal, no graph execution
       
       4. ✅ GET /api/guardrails/status:
-         - Returns {"enabled": true, "model": "gpt-5.4-mini"}
+         - Returns {"enabled": true, "model": "openai/gpt-oss-120b"}
          - Counters increment correctly (checks_run: 3→9, blocks: 1→3)
       
       5. ✅ Multi-turn session persistence:

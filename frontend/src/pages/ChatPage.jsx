@@ -112,7 +112,7 @@ export default function ChatPage() {
           <div className="px-5 py-5 border-b border-white/5">
             <div className="font-display text-lg tracking-tight text-white">MESH<span style={{ color: "#0ea5e9" }}>·</span>Support</div>
             <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-zinc-500 mt-1">
-              Multi-Agent · gpt-5.4-mini
+              Multi-Agent · GPT-OSS 120B
             </div>
           </div>
           <div className="px-3 pt-3 flex items-center gap-2">

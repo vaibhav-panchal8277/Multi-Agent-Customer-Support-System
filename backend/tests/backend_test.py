@@ -1,7 +1,7 @@
 """End-to-end backend tests for Multi-Agent Support platform.
 
 Tests exercise the real deployed backend (REACT_APP_BACKEND_URL) so that AI /
-integration paths (Emergent LLM + Langfuse) are hit for real.
+integration paths (Groq LLM + Langfuse) are hit for real.
 """
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ class TestHealth:
         data = r.json()
         assert data["ok"] is True
         assert data["service"] == "multi-agent-support"
-        assert data["model"] == "gpt-5.4-mini"
+        assert data["model"] == "openai/gpt-oss-120b"
 
     def test_agents_list(self, api_client):
         r = api_client.get(f"{API}/agents", timeout=10)

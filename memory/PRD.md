@@ -5,7 +5,7 @@ Multi-agent customer support platform. Central Supervisor Agent classifies incom
 
 ## Architecture
 - **Backend**: FastAPI (`/app/backend/server.py`), LangGraph state machine (`agents.py`), mock tool APIs (`tools.py`), MongoDB persistence.
-- **LLM**: GPT-5.4-mini via emergentintegrations `LlmChat` (Emergent Universal Key).
+- **LLM**: GPT-OSS 120B (`openai/gpt-oss-120b`) via the Groq API (`groq` `AsyncGroq` client).
 - **Tracing**: Langfuse v3 SDK, `start_as_current_span` per turn.
 - **State**: LangGraph `StateGraph(ChatState)` with nodes {supervisor, clarify, billing, technical, refunds}. Conditional edges enable dynamic handoff between sub-agents and back to supervisor.
 - **Frontend**: React + Tailwind, dark "Cybernetic Command Center" aesthetic, agent-colored accents.
@@ -16,7 +16,7 @@ Multi-agent customer support platform. Central Supervisor Agent classifies incom
 - NeMo Guardrails 0.23.0 wraps every `/api/chat` turn.
 - **Input rail** (`self_check_input`): blocks jailbreak / prompt-injection, unsafe content, and off-topic messages (keeps users to billing/technical/refunds/general support).
 - **Output rail** (`self_check_output`): moderates the final answer; explicitly allows sharing the customer's own account/invoice/refund data (avoids false positives) while blocking prompt/secret leaks, abuse, and unsafe content.
-- LLM backend = same Emergent GPT-5.4-mini, wrapped as a LangChain `LLM` and injected via `LLMRails(llm=...)`. LLM-only rails (no embeddings/vector index). `enable_rails_exceptions=true` gives a deterministic block signal.
+- LLM backend = same Groq GPT-OSS 120B, wrapped as a LangChain `LLM` and injected via `LLMRails(llm=...)`. LLM-only rails (no embeddings/vector index). `enable_rails_exceptions=true` gives a deterministic block signal.
 - Blocked turns short-circuit the LangGraph, return a polite refusal with `agent="guardrail"`, and emit a red `guardrail` trace event (shield icon) in the activity feed + admin timeline. Fail-open on internal error.
 - Diagnostic endpoint `GET /api/guardrails/status`. Files: `backend/guardrails_engine.py`, `backend/guardrails_config/{config.yml,prompts.yml}`.
 - Backend tested: 23/23, no false positives on legitimate support replies.
@@ -43,4 +43,4 @@ N/A — open demo, no auth.
 - P1: Human-escalation node when a sub-agent handoff loop exceeds threshold.
 - P2: Real (non-mock) integrations for invoices/tickets (Stripe / Zendesk).
 - P2: Langfuse trace deep-link from admin dashboard.
-- P2: Auth (JWT or Emergent Google) so admin dashboard is gated.
+- P2: Auth (JWT or Google OAuth) so admin dashboard is gated.

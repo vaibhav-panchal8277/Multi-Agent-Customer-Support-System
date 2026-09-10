@@ -1,5 +1,5 @@
 {
-  "summary": "Config/packaging fix verification (backend-only). All 4 env template files exist (backend/env.example, backend/.env.example, frontend/env.example, frontend/.env.example) with the required keys. Gitignore whitelist is correct: backend/.env is IGNORED while all 4 example templates are NOT IGNORED (whitelisted by rules `!**/env.example` and `!**/.env.example` on lines 92 and 94 of .gitignore). No runtime regression: GET /api/ returns model=gpt-5.4-mini; POST /api/sessions then POST /api/chat with 'Refund INV-1001 please' correctly routes to agent=refunds and invokes check_refund_eligibility tool_call end-to-end via Emergent LLM (gpt-5.4-mini). Real AI output verified (classification confidence 0.97, latency_ms > 0, meaningful natural-language reply).",
+  "summary": "Config/packaging fix verification (backend-only). All 4 env template files exist (backend/env.example, backend/.env.example, frontend/env.example, frontend/.env.example) with the required keys. Gitignore whitelist is correct: backend/.env is IGNORED while all 4 example templates are NOT IGNORED (whitelisted by rules `!**/env.example` and `!**/.env.example` on lines 92 and 94 of .gitignore). No runtime regression: GET /api/ returns model=openai/gpt-oss-120b; POST /api/sessions then POST /api/chat with 'Refund INV-1001 please' correctly routes to agent=refunds and invokes check_refund_eligibility tool_call end-to-end via Groq LLM (openai/gpt-oss-120b). Real AI output verified (classification confidence 0.97, latency_ms > 0, meaningful natural-language reply).",
   "backend_issues": {
     "critical": [],
     "minor": []
@@ -11,7 +11,7 @@
   },
   "verification_details": {
     "files_present": {
-      "/app/backend/env.example": "OK - contains MONGO_URL, DB_NAME, CORS_ORIGINS, EMERGENT_LLM_KEY, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST + rename hint header",
+      "/app/backend/env.example": "OK - contains MONGO_URL, DB_NAME, CORS_ORIGINS, GROQ_API_KEY, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST + rename hint header",
       "/app/backend/.env.example": "OK (unchanged) - contains same 7 keys",
       "/app/frontend/env.example": "OK - contains REACT_APP_BACKEND_URL + WDS_SOCKET_PORT + rename hint header",
       "/app/frontend/.env.example": "OK (unchanged) - contains REACT_APP_BACKEND_URL + WDS_SOCKET_PORT"
@@ -25,9 +25,9 @@
       "note": "git check-ignore -v with a whitelist rule prints the `!`-prefixed rule and exits 0; git check-ignore (no -v) exits 1 for whitelisted paths, confirming they are not ignored. Verified via git ls-files/check-ignore combined logic."
     },
     "runtime_smoke": {
-      "GET /api/": "200 -> {\"ok\": true, \"service\": \"multi-agent-support\", \"model\": \"gpt-5.4-mini\"}",
+      "GET /api/": "200 -> {\"ok\": true, \"service\": \"multi-agent-support\", \"model\": \"openai/gpt-oss-120b\"}",
       "POST /api/sessions": "200 -> session id returned (schema uses `id`, not `session_id`)",
-      "POST /api/chat (Refund INV-1001)": "200 -> agent=refunds, intent=refunds, confidence=0.97, tool_calls[0].tool=check_refund_eligibility with args {invoice_id: INV-1001}, real LLM reply generated (latency_ms 1489+824+884), Emergent LLM (gpt-5.4-mini) end-to-end confirmed working"
+      "POST /api/chat (Refund INV-1001)": "200 -> agent=refunds, intent=refunds, confidence=0.97, tool_calls[0].tool=check_refund_eligibility with args {invoice_id: INV-1001}, real LLM reply generated (latency_ms 1489+824+884), Groq LLM (openai/gpt-oss-120b) end-to-end confirmed working"
     }
   },
   "test_report_links": [],
@@ -37,10 +37,10 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "100%", "frontend": "N/A (skipped per request)"},
-  "test_credentials": "Not applicable - no auth flow in scope. EMERGENT_LLM_KEY and LANGFUSE_* keys are set in /app/backend/.env and confirmed working (real gpt-5.4-mini response received).",
+  "test_credentials": "Not applicable - no auth flow in scope. GROQ_API_KEY and LANGFUSE_* keys are set in /app/backend/.env and confirmed working (real openai/gpt-oss-120b response received).",
   "seed_data_creation": "None - used existing in-memory mock invoice INV-1001 (which is intentionally >30 days old, so 'not eligible' branch was exercised)",
   "retest_needed": false,
   "should_main_agent_self_test": false,
-  "context_for_next_testing_agent": "Config/packaging fix only. Bug was pure UX (user could not see hidden .env.example dotfile on their local FS). Fix added visible aliases backend/env.example and frontend/env.example; both hidden originals kept. .gitignore whitelists both `!.env.example` / `!**/.env.example` (line 91-92) AND `!env.example` / `!**/env.example` (line 93-94). Backend runtime is fully intact - model=gpt-5.4-mini, Emergent LLM working, refund tool_call flow verified. No further retest needed unless env schema changes.",
-  "rca of the issue": "Root cause: user's local file browser hides dotfiles by default, so the original template file /app/backend/.env.example (leading dot) was invisible to them during setup. Mitigation shipped: added non-hidden visible aliases /app/backend/env.example and /app/frontend/env.example (no leading dot) with the same key set, plus a rename-hint comment header. .gitignore was updated with two additional whitelist rules `!env.example` and `!**/env.example` (lines 93-94) so the new visible templates remain tracked. Verified: (a) both visible and hidden templates exist and are byte-identical in key set, (b) backend/.env real secrets file remains git-ignored by `*.env` (line 90) since whitelist rules do not match `.env` files, (c) backend runtime unaffected — /api/ still reports gpt-5.4-mini and the multi-agent refund flow works end-to-end with a real Emergent LLM call."
+  "context_for_next_testing_agent": "Config/packaging fix only. Bug was pure UX (user could not see hidden .env.example dotfile on their local FS). Fix added visible aliases backend/env.example and frontend/env.example; both hidden originals kept. .gitignore whitelists both `!.env.example` / `!**/.env.example` (line 91-92) AND `!env.example` / `!**/env.example` (line 93-94). Backend runtime is fully intact - model=openai/gpt-oss-120b, Groq LLM working, refund tool_call flow verified. No further retest needed unless env schema changes.",
+  "rca of the issue": "Root cause: user's local file browser hides dotfiles by default, so the original template file /app/backend/.env.example (leading dot) was invisible to them during setup. Mitigation shipped: added non-hidden visible aliases /app/backend/env.example and /app/frontend/env.example (no leading dot) with the same key set, plus a rename-hint comment header. .gitignore was updated with two additional whitelist rules `!env.example` and `!**/env.example` (lines 93-94) so the new visible templates remain tracked. Verified: (a) both visible and hidden templates exist and are byte-identical in key set, (b) backend/.env real secrets file remains git-ignored by `*.env` (line 90) since whitelist rules do not match `.env` files, (c) backend runtime unaffected — /api/ still reports openai/gpt-oss-120b and the multi-agent refund flow works end-to-end with a real Groq LLM call."
 }

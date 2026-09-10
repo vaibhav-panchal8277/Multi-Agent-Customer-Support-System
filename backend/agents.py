@@ -1,11 +1,13 @@
 """Multi-agent orchestrator: Supervisor + Billing/Technical/Refunds sub-agents.
 
 Uses LangGraph's StateGraph for explicit state + conditional routing, with each
-node calling GPT-5.4-mini via the emergentintegrations LlmChat client. Every
-agent action, tool call, and hand-off is wrapped in a Langfuse span for tracing.
+node calling Groq's openai/gpt-oss-120b via the official groq AsyncGroq
+client. Every agent action, tool call, and hand-off is wrapped in a Langfuse
+span for tracing.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -13,24 +15,37 @@ import re
 import time
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from groq import AsyncGroq
 from langfuse import Langfuse
 from langgraph.graph import END, StateGraph
 
-from tools import TOOL_REGISTRY
+from tools import TOOL_REGISTRY, call_tool_scoped
 
 log = logging.getLogger("agents")
 
 # --- Config ---
-EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
-MODEL_NAME = "gpt-5.4-mini"
-MODEL_PROVIDER = "openai"
+# Groq API (OpenAI-compatible). Set GROQ_API_KEY in backend/.env; optionally
+# override the model via GROQ_MODEL. openai/gpt-oss-120b is a strong
+# production default for the strict-JSON routing + tool reasoning below.
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+MODEL_NAME = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+
+# One shared async client for the whole module.
+_groq = AsyncGroq(api_key=GROQ_API_KEY)
+
+
+def _langfuse_host() -> str:
+    """Resolve the Langfuse host, tolerating the older LANGFUSE_BASE_URL key (M5)."""
+    return (os.environ.get("LANGFUSE_HOST")
+            or os.environ.get("LANGFUSE_BASE_URL")
+            or "https://us.cloud.langfuse.com")
+
 
 # Langfuse client (auto-reads env vars). Safe if keys are missing/wrong.
 _langfuse: Optional[Langfuse] = None
 LANGFUSE_STATUS: Dict[str, Any] = {
     "enabled": False,
-    "host": os.environ.get("LANGFUSE_HOST", "https://us.cloud.langfuse.com"),
+    "host": _langfuse_host(),
     "public_key_prefix": (os.environ.get("LANGFUSE_PUBLIC_KEY") or "")[:10],
     "auth_ok": None,
     "last_error": None,
@@ -43,7 +58,7 @@ def _init_langfuse() -> None:
     global _langfuse
     pk = os.environ.get("LANGFUSE_PUBLIC_KEY")
     sk = os.environ.get("LANGFUSE_SECRET_KEY")
-    host = os.environ.get("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
+    host = _langfuse_host()
     if not pk or not sk:
         LANGFUSE_STATUS["last_error"] = "LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY missing"
         log.warning("Langfuse disabled: %s", LANGFUSE_STATUS["last_error"])
@@ -78,6 +93,7 @@ _init_langfuse()
 # --- Graph state ---
 class ChatState(TypedDict, total=False):
     session_id: str
+    customer_email: Optional[str]           # session-bound identity for tool scoping (C4)
     user_message: str
     history: List[Dict[str, str]]           # [{role, content, agent?}]
     current_agent: Literal["supervisor", "billing", "technical", "refunds", "clarify", "done"]
@@ -102,7 +118,6 @@ AGENT_COLORS = {
 
 # ---------- LLM helper ----------
 async def _with_retries(coro_factory, *, tries: int = 3, base_delay: float = 0.8):
-    import asyncio
     last_exc = None
     for i in range(tries):
         try:
@@ -117,17 +132,34 @@ async def _with_retries(coro_factory, *, tries: int = 3, base_delay: float = 0.8
     raise last_exc  # type: ignore[misc]
 
 
+async def _groq_chat(system: str, user: str, *, json_mode: bool = False,
+                     temperature: float = 0.4) -> str:
+    """One Groq chat-completion call, returning the assistant text.
+
+    Groq's API is stateless (no server-side sessions), so each call sends the
+    system + user turn directly. ``json_mode`` asks Groq to emit a valid JSON
+    object, which we use for the supervisor/sub-agent routing decisions.
+    """
+    kwargs: Dict[str, Any] = {
+        "model": MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": temperature,
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    resp = await _groq.chat.completions.create(**kwargs)
+    return resp.choices[0].message.content or ""
+
+
 async def _llm_json(system: str, user: str, session_id: str, span_name: str) -> Dict[str, Any]:
     """Call the LLM and try to parse JSON out of the response."""
     started = time.time()
 
     async def _call():
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=session_id,
-            system_message=system,
-        ).with_model(MODEL_PROVIDER, MODEL_NAME)
-        return await chat.send_message(UserMessage(text=user))
+        return await _groq_chat(system, user, json_mode=True, temperature=0.2)
 
     raw = await _with_retries(_call)
     latency_ms = int((time.time() - started) * 1000)
@@ -155,12 +187,7 @@ async def _llm_text(system: str, user: str, session_id: str) -> Dict[str, Any]:
     started = time.time()
 
     async def _call():
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=session_id,
-            system_message=system,
-        ).with_model(MODEL_PROVIDER, MODEL_NAME)
-        return await chat.send_message(UserMessage(text=user))
+        return await _groq_chat(system, user, temperature=0.5)
 
     text = await _with_retries(_call)
     return {"text": text, "_latency_ms": int((time.time() - started) * 1000)}
@@ -183,13 +210,29 @@ Return strict JSON: {"intent":"billing|technical|refunds|general","confidence":0
 Be strict. If unsure, lower confidence."""
 
 
+def _parse_confidence(raw: Any, default: float = 0.5) -> float:
+    """Coerce the model's 'confidence' into a clamped [0.0, 1.0] float (issue L5).
+
+    Robust to non-numeric junk ("high"), missing values, and NaN. Crucially it
+    preserves a genuine 0.0 — the old ``float(x or 0.5)`` silently promoted 0.0
+    to 0.5 because 0.0 is falsy, masking a "very unsure" classification.
+    """
+    try:
+        c = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if c != c:  # NaN
+        return default
+    return max(0.0, min(1.0, c))
+
+
 async def supervisor_node(state: ChatState) -> ChatState:
     hist = "\n".join(f"{m['role']}: {m['content']}" for m in state.get("history", [])[-6:])
     prompt = f"Conversation so far:\n{hist}\n\nLatest customer message: {state['user_message']}"
     result = await _llm_json(SUPERVISOR_SYSTEM, prompt, state["session_id"], "supervisor")
 
     intent = str(result.get("intent", "general")).lower()
-    confidence = float(result.get("confidence", 0.5) or 0.5)
+    confidence = _parse_confidence(result.get("confidence"))
     reason = str(result.get("reason", ""))
 
     state["intent"] = intent
@@ -284,14 +327,11 @@ Never invent invoice IDs; if unknown, ask the customer or use list_invoices_for(
         if action == "call_tool":
             tool_name = result.get("tool")
             args = result.get("args") or {}
-            tool_fn = TOOL_REGISTRY.get(agent_key, {}).get(tool_name)
-            if not tool_fn:
-                res = {"ok": False, "error": f"unknown tool {tool_name}"}
-            else:
-                try:
-                    res = tool_fn(**args)
-                except TypeError as e:
-                    res = {"ok": False, "error": f"bad args: {e}"}
+            # Enforce customer scoping server-side (C4): the LLM only supplies
+            # free-text args, so ownership/enumeration checks live in tools.py,
+            # not in the prompt. Anonymous sessions (no bound email) run as before.
+            res = call_tool_scoped(agent_key, tool_name, args,
+                                   state.get("customer_email"))
             state.setdefault("tool_calls", []).append(
                 {"agent": agent_key, "tool": tool_name, "args": args, "result": res}
             )
@@ -416,10 +456,20 @@ _GRAPH = build_graph()
 
 
 async def run_turn(session_id: str, user_message: str,
-                   history: List[Dict[str, str]]) -> ChatState:
-    """Run a single turn through the multi-agent graph, with Langfuse tracing."""
+                   history: List[Dict[str, str]],
+                   customer_email: Optional[str] = None) -> ChatState:
+    """Run a single turn through the multi-agent graph, with Langfuse tracing.
+
+    The multi-agent graph is invoked **exactly once**. Langfuse tracing wraps
+    only the bookkeeping around that single invocation, so a tracing failure can
+    never cause the (expensive, multi-LLM-call) graph to run a second time:
+      * span *setup* failure  -> fall back to an untraced run (chat stays up)
+      * graph error           -> close the span, then propagate (no silent re-run)
+      * trace update / flush  -> best-effort, swallowed (graph already succeeded)
+    """
     initial: ChatState = {
         "session_id": session_id,
+        "customer_email": (customer_email or "").strip().lower() or None,
         "user_message": user_message,
         "history": history,
         "current_agent": "supervisor",
@@ -428,51 +478,81 @@ async def run_turn(session_id: str, user_message: str,
         "hops": 0,
     }
 
-    # Wrap the whole turn in a Langfuse trace (v4 SDK API)
-    if _langfuse is not None:
-        try:
-            trace_metadata = {
-                "session_id": session_id,
-                "user_message": user_message,
-            }
-            with _langfuse.start_as_current_observation(
-                name="support_turn",
-                as_type="span",
-                input={"user_message": user_message, "session_id": session_id},
-                metadata=trace_metadata,
-            ) as obs:
-                final = await _GRAPH.ainvoke(initial, config={"recursion_limit": 20})
-                final_agent = final.get("current_agent_final") or final.get("current_agent")
-                obs.update(
-                    output={"agent": final_agent, "response": final.get("response", "")},
-                    metadata={
-                        **trace_metadata,
-                        "intent": final.get("intent"),
-                        "confidence": final.get("confidence"),
-                        "tool_calls": final.get("tool_calls", []),
-                        "hops": final.get("hops", 0),
-                    },
-                )
-                # Set trace-level input/output so it shows up on the Traces list.
-                obs.set_trace_io(
-                    input={"user_message": user_message, "session_id": session_id},
-                    output={"agent": final_agent, "response": final.get("response", "")},
-                )
-            # Flush immediately so the trace appears in the UI on the next refresh
-            # instead of waiting for the SDK's background batch timer.
+    # No tracing configured -> just run the graph once.
+    if _langfuse is None:
+        return await _GRAPH.ainvoke(initial, config={"recursion_limit": 20})
+
+    trace_metadata = {"session_id": session_id, "user_message": user_message}
+
+    # 1) Try to open a tracing span. If even this fails, run untraced (once).
+    obs = None
+    obs_cm = None
+    try:
+        obs_cm = _langfuse.start_as_current_observation(
+            name="support_turn",
+            as_type="span",
+            input={"user_message": user_message, "session_id": session_id},
+            metadata=trace_metadata,
+        )
+        obs = obs_cm.__enter__()
+    except Exception as e:
+        LANGFUSE_STATUS["last_error"] = f"span error: {e}"
+        log.warning("Langfuse span setup failed, running graph without tracing: %s", e)
+        obs = obs_cm = None
+
+    # 2) Run the graph EXACTLY ONCE. Graph errors are not swallowed: close the
+    #    span and re-raise so the caller can surface a proper error.
+    try:
+        final = await _GRAPH.ainvoke(initial, config={"recursion_limit": 20})
+    except BaseException as graph_exc:
+        if obs_cm is not None:
             try:
-                _langfuse.flush()
-                LANGFUSE_STATUS["traces_sent"] = LANGFUSE_STATUS.get("traces_sent", 0) + 1
-                LANGFUSE_STATUS["last_flush_ts"] = time.time()
-                LANGFUSE_STATUS["last_error"] = None
-            except Exception as e:
-                LANGFUSE_STATUS["last_error"] = f"flush error: {e}"
-                log.warning("Langfuse flush failed: %s", e)
-            return final
+                obs_cm.__exit__(type(graph_exc), graph_exc, graph_exc.__traceback__)
+            except Exception:
+                pass
+        raise
+
+    # 3) Graph succeeded -> record trace metadata + flush (all best-effort).
+    if obs is not None:
+        try:
+            final_agent = final.get("current_agent_final") or final.get("current_agent")
+            obs.update(
+                output={"agent": final_agent, "response": final.get("response", "")},
+                metadata={
+                    **trace_metadata,
+                    "intent": final.get("intent"),
+                    "confidence": final.get("confidence"),
+                    "tool_calls": final.get("tool_calls", []),
+                    "hops": final.get("hops", 0),
+                },
+            )
+            # Set trace-level input/output so it shows up on the Traces list.
+            obs.set_trace_io(
+                input={"user_message": user_message, "session_id": session_id},
+                output={"agent": final_agent, "response": final.get("response", "")},
+            )
         except Exception as e:
-            LANGFUSE_STATUS["last_error"] = f"span error: {e}"
-            log.warning("Langfuse span failed, running graph without tracing: %s", e)
-    return await _GRAPH.ainvoke(initial, config={"recursion_limit": 20})
+            LANGFUSE_STATUS["last_error"] = f"trace update error: {e}"
+            log.warning("Langfuse trace update failed: %s", e)
+        finally:
+            if obs_cm is not None:
+                try:
+                    obs_cm.__exit__(None, None, None)
+                except Exception:
+                    pass
+        # Flush immediately so the trace appears in the UI on the next refresh
+        # instead of waiting for the SDK's background batch timer. flush() does
+        # blocking network I/O, so run it off the event loop (issue M3).
+        try:
+            await asyncio.to_thread(_langfuse.flush)
+            LANGFUSE_STATUS["traces_sent"] = LANGFUSE_STATUS.get("traces_sent", 0) + 1
+            LANGFUSE_STATUS["last_flush_ts"] = time.time()
+            LANGFUSE_STATUS["last_error"] = None
+        except Exception as e:
+            LANGFUSE_STATUS["last_error"] = f"flush error: {e}"
+            log.warning("Langfuse flush failed: %s", e)
+
+    return final
 
 
 def flush_langfuse() -> None:

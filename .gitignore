@@ -45,10 +45,16 @@ dump.rdb
 # System files
 .DS_Store
 *.pem
+*.crt
+*.cer
+Thumbs.db
 
 # Python
 __pycache__/
 *pyc*
+.coverage
+htmlcov/
+.tox/
 venv/
 .venv/
 *.egg-info/
@@ -67,6 +73,9 @@ chainlit.md
 
 # Data and databases
 agenthub/agents/youtube/db
+*.sqlite
+*.sqlite3
+*.db
 
 # Archive files and large assets
 **/*.zip
@@ -85,6 +94,8 @@ memory/test_credentials.md
 # Mobile development
 # ---- Environment files (real secrets, never commit) ----
 .env
+secrets.json
+*.log
 .env.local
 .env.*.local
 .env.development.local
@@ -95,6 +106,13 @@ memory/test_credentials.md
 credentials.json
 *.key
 .credentials
+
+# Git config (can contain credentials)
+.gitconfig
+
+# Local settings
+*.local
+.local/
 
 # ---- Whitelist example templates (must come AFTER all exclude rules) ----
 !env.example

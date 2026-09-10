@@ -8,12 +8,13 @@ Tests:
 4. Multi-turn session persistence
 5. Regression: existing endpoints still work
 """
+import os
 import requests
 import time
 import json
 
-# Backend URL from frontend/.env
-BASE_URL = "https://28b9c1a7-74f1-4613-a8e6-8884b7946965.preview.emergentagent.com/api"
+# Backend URL — override via the BASE_URL env var; defaults to the local dev server.
+BASE_URL = os.environ.get("BASE_URL", "http://localhost:8001/api")
 TIMEOUT = 60  # Generous timeout for guardrail checks (~0.7-1s each, 2 per turn)
 
 # Test results tracking
@@ -129,11 +130,11 @@ def test_guardrails_status_initial():
         resp = requests.get(f"{BASE_URL}/guardrails/status", timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            if data.get("enabled") == True and data.get("model") == "gpt-5.4-mini":
+            if data.get("enabled") == True and data.get("model") == "openai/gpt-oss-120b":
                 log_pass("GET /api/guardrails/status (initial)")
                 return data
             else:
-                log_fail("GET /api/guardrails/status", f"Expected enabled=true, model=gpt-5.4-mini, got: {data}")
+                log_fail("GET /api/guardrails/status", f"Expected enabled=true, model=openai/gpt-oss-120b, got: {data}")
                 return None
         else:
             log_fail("GET /api/guardrails/status", f"HTTP {resp.status_code}")

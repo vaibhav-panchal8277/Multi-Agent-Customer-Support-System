@@ -3,14 +3,16 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.cors import CORSMiddleware
@@ -19,7 +21,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 # import agents AFTER env is loaded
-from agents import AGENT_COLORS, LANGFUSE_STATUS, flush_langfuse, run_turn  # noqa: E402
+from agents import AGENT_COLORS, LANGFUSE_STATUS, MODEL_NAME, flush_langfuse, run_turn  # noqa: E402
 from guardrails_engine import GUARDRAILS_STATUS, check_input, check_output  # noqa: E402
 
 # --- Mongo ---
@@ -27,8 +29,58 @@ mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
 
-app = FastAPI(title="Multi-Agent Support API")
-api = APIRouter(prefix="/api")
+# --- Auth (issue C3) ---
+# A single shared bearer token gates the whole /api surface. If API_TOKEN is
+# unset the gate is disabled (local dev), so existing local workflows keep
+# working unchanged; set a strong API_TOKEN in any shared/deployed environment.
+API_TOKEN = os.environ.get("API_TOKEN", "").strip()
+
+
+async def require_auth(authorization: Optional[str] = Header(default=None)) -> None:
+    """Require `Authorization: Bearer <API_TOKEN>` when a token is configured."""
+    if not API_TOKEN:
+        return
+    provided = authorization or ""
+    # constant-time comparison avoids leaking the token through response timing
+    if not secrets.compare_digest(provided, f"Bearer {API_TOKEN}"):
+        raise HTTPException(status_code=401, detail="invalid or missing API token")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # ---- Startup: ensure indexes for this API's query patterns (issue M4) ----
+    # Without these, every session/message/turn lookup is a full collection scan,
+    # which degrades badly as history grows.
+    try:
+        await db.messages.create_index([("session_id", 1), ("created_at", 1)],
+                                        name="messages_session_created")
+        await db.turns.create_index([("session_id", 1), ("created_at", 1)],
+                                    name="turns_session_created")
+        await db.sessions.create_index("id", unique=True, name="sessions_id_unique")
+        await db.sessions.create_index([("updated_at", -1)],
+                                       name="sessions_updated_desc")
+        logging.getLogger(__name__).info("MongoDB indexes ensured")
+    except Exception as e:  # don't let an index hiccup stop the app from booting
+        logging.getLogger(__name__).warning("MongoDB index creation failed: %s", e)
+
+    try:
+        yield
+    finally:
+        # ---- Shutdown (replaces deprecated @app.on_event, issue L5) ----
+        flush_langfuse()
+        client.close()
+
+
+app = FastAPI(title="Multi-Agent Support API", lifespan=lifespan)
+
+
+@app.get("/health")
+async def health():
+    """Public, unauthenticated liveness probe (no token required)."""
+    return {"ok": True, "auth_required": bool(API_TOKEN)}
+
+
+api = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
 
 
 # ---------- Models ----------
@@ -72,8 +124,10 @@ class SessionOut(BaseModel):
 
 
 class ChatIn(BaseModel):
-    session_id: str
-    message: str
+    session_id: str = Field(min_length=1, max_length=128)
+    # Bound the message so a client can't push an unbounded payload into the LLM
+    # prompt / DB (issue L1). 4000 chars is generous for support chat.
+    message: str = Field(min_length=1, max_length=4000)
 
 
 class ChatOut(BaseModel):
@@ -90,7 +144,7 @@ class ChatOut(BaseModel):
 # ---------- Routes ----------
 @api.get("/")
 async def root():
-    return {"ok": True, "service": "multi-agent-support", "model": "gpt-5.4-mini"}
+    return {"ok": True, "service": "multi-agent-support", "model": MODEL_NAME}
 
 
 @api.get("/langfuse/status")
@@ -209,8 +263,9 @@ async def chat(body: ChatIn):
         tool_calls: List[Dict[str, Any]] = []
         hops = 0
     else:
-        # run graph
-        state = await run_turn(body.session_id, body.message, history)
+        # run graph (bind the session's customer identity so tools are scoped, C4)
+        state = await run_turn(body.session_id, body.message, history,
+                               customer_email=session.get("customer_email"))
         response_text = state.get("response", "…")
         final_agent = state.get("current_agent_final") or "supervisor"
         intent = state.get("intent")
@@ -300,10 +355,15 @@ async def delete_session(sid: str):
 
 app.include_router(api)
 
+# CORS (issue L2): the browser spec forbids pairing credentials with a "*"
+# origin. We authenticate with a bearer token (no cookies), so credentials mode
+# isn't needed for the open demo; only enable it when explicit origins are set.
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
+_cors_wildcard = (not _cors_origins) or ("*" in _cors_origins)
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=["*"] if _cors_wildcard else _cors_origins,
+    allow_credentials=not _cors_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -311,9 +371,3 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-
-@app.on_event("shutdown")
-async def _shutdown():
-    flush_langfuse()
-    client.close()

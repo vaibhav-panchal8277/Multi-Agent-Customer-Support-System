@@ -3,7 +3,16 @@ import axios from "axios";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 
+// Optional shared API token (issue C3). When REACT_APP_API_TOKEN is set, every
+// request carries `Authorization: Bearer <token>`; when unset, requests go out
+// unauthenticated so local dev against a tokenless backend still works.
+const API_TOKEN = process.env.REACT_APP_API_TOKEN;
+
 export const api = axios.create({ baseURL: API, timeout: 60000 });
+
+if (API_TOKEN) {
+  api.defaults.headers.common["Authorization"] = `Bearer ${API_TOKEN}`;
+}
 
 export async function listAgents() {
   const { data } = await api.get("/agents");

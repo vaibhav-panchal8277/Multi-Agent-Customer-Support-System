@@ -2,10 +2,11 @@
 Additional edge case tests for MESH Support guardrails.
 Tests more nuanced scenarios and edge cases.
 """
+import os
 import requests
 import json
 
-BASE_URL = "https://28b9c1a7-74f1-4613-a8e6-8884b7946965.preview.emergentagent.com/api"
+BASE_URL = os.environ.get("BASE_URL", "http://localhost:8001/api")
 TIMEOUT = 60
 
 def create_session():
