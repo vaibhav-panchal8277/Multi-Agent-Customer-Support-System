@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { listSessions, getTraces, metaFor } from "@/lib/api";
+import { listAllSessions, getTraces, metaFor, getAdminToken, setAdminToken } from "@/lib/api";
 import { TraceTimeline } from "@/components/TraceTimeline";
 import { AgentBadge } from "@/components/AgentBadge";
 import { ArrowLeft, Activity, Zap, LayoutGrid } from "lucide-react";
@@ -9,24 +9,50 @@ export default function AdminDashboard() {
   const [sessions, setSessions] = useState([]);
   const [selected, setSelected] = useState(null);
   const [turns, setTurns] = useState([]);
+  // "checking" | "needs_token" | "ok"
+  const [authState, setAuthState] = useState(getAdminToken() ? "checking" : "needs_token");
+  const [authError, setAuthError] = useState(null);
 
-  useEffect(() => {
-    (async () => {
-      const s = await listSessions();
+  const load = async () => {
+    try {
+      const s = await listAllSessions();
       setSessions(s);
-      if (s.length && !selected) {
-        const firstId = s[0].id;
-        setSelected(firstId);
-        setTurns(await getTraces(firstId));
+      setAuthState("ok");
+      setAuthError(null);
+      if (s.length) setSelected(cur => cur || s[0].id);
+    } catch (e) {
+      const status = e?.response?.status;
+      if (status === 401 || status === 403) {
+        setAdminToken("");
+        setAuthState("needs_token");
+        setAuthError(e?.response?.data?.detail || "Admin token rejected");
+      } else {
+        setAuthError(e?.message);
       }
-    })();
-    // eslint-disable-next-line
-  }, []);
+    }
+  };
 
   useEffect(() => {
-    if (!selected) return;
-    (async () => setTurns(await getTraces(selected)))();
-  }, [selected]);
+    if (authState === "checking") load();
+    // eslint-disable-next-line
+  }, [authState]);
+
+  useEffect(() => {
+    if (!selected || authState !== "ok") return;
+    (async () => {
+      try { setTurns(await getTraces(selected)); } catch { setTurns([]); }
+    })();
+  }, [selected, authState]);
+
+  if (authState !== "ok") {
+    return (
+      <AdminLogin
+        checking={authState === "checking"}
+        error={authError}
+        onSubmit={(token) => { setAdminToken(token); setAuthState("checking"); }}
+      />
+    );
+  }
 
   const agentDistribution = countBy(turns.map(t => t.agent).filter(Boolean));
   const totalToolCalls = turns.reduce((n, t) => n + (t.tool_calls?.length || 0), 0);
@@ -152,6 +178,49 @@ export default function AdminDashboard() {
           </section>
         </div>
       </div>
+    </div>
+  );
+}
+
+// The admin token is typed in at runtime and kept in sessionStorage — it must
+// never be compiled into the public frontend bundle.
+function AdminLogin({ checking, error, onSubmit }) {
+  const [token, setToken] = useState("");
+  return (
+    <div className="grain min-h-screen relative flex items-center justify-center p-6">
+      <form
+        onSubmit={(e) => { e.preventDefault(); if (token.trim()) onSubmit(token.trim()); }}
+        className="relative z-10 w-full max-w-sm sharp border border-white/10 bg-[#0f0f11] p-6 space-y-4"
+        style={{ borderRadius: 4 }}
+        data-testid="admin-login"
+      >
+        <NavLink to="/" className="flex items-center gap-2 text-zinc-400 hover:text-white text-sm">
+          <ArrowLeft size={14} /> Chat
+        </NavLink>
+        <div>
+          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-zinc-500">Admin</div>
+          <div className="font-display text-2xl tracking-tight">Agent Command Center</div>
+        </div>
+        <input
+          type="password"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          placeholder="Admin token (ADMIN_TOKEN on the server)"
+          data-testid="admin-token-input"
+          className="w-full bg-zinc-950 border border-white/10 sharp px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-white/30"
+          style={{ borderRadius: 2 }}
+        />
+        <button
+          type="submit"
+          disabled={checking}
+          data-testid="admin-token-submit"
+          className="w-full sharp px-4 py-2 bg-white text-zinc-900 text-sm font-medium disabled:opacity-40"
+          style={{ borderRadius: 2 }}
+        >
+          {checking ? "Checking…" : "Open dashboard"}
+        </button>
+        {error && <div className="text-xs text-red-400" data-testid="admin-error">{error}</div>}
+      </form>
     </div>
   );
 }

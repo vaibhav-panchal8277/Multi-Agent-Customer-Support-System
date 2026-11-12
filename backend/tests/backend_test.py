@@ -6,13 +6,15 @@ integration paths (Groq LLM + Langfuse) are hit for real.
 from __future__ import annotations
 
 import os
-import time
 import uuid
 
 import pytest
-import requests
 
-BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
+from tests.api_client import ADMIN_TOKEN, ApiClient, verify
+
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+# Live-server E2E suite: skipped unless REACT_APP_BACKEND_URL points at a running backend.
+pytestmark = pytest.mark.skipif(not BASE_URL, reason="set REACT_APP_BACKEND_URL to run E2E tests")
 API = f"{BASE_URL}/api"
 CHAT_TIMEOUT = 90  # LLM calls can be slow
 
@@ -20,31 +22,30 @@ CHAT_TIMEOUT = 90  # LLM calls can be slow
 # ---------- Fixtures ----------
 @pytest.fixture(scope="module")
 def api_client():
-    s = requests.Session()
-    s.headers.update({"Content-Type": "application/json"})
+    s = ApiClient()
     yield s
     s.close()
 
 
 @pytest.fixture(scope="module")
-def created_session_ids():
-    """Track sessions created so we can clean up."""
+def created_session_ids(api_client):
+    """Track sessions created so we can clean up (with their session keys)."""
     ids = []
     yield ids
-    # teardown
-    s = requests.Session()
     for sid in ids:
         try:
-            s.delete(f"{API}/sessions/{sid}", timeout=15)
+            api_client.delete(f"{API}/sessions/{sid}", timeout=15)
         except Exception:
             pass
 
 
-def _new_session(api_client, created_session_ids, title="TEST_session"):
+def _new_session(api_client, created_session_ids, title="TEST_session", verify_as=None):
     r = api_client.post(f"{API}/sessions", json={"title": title}, timeout=15)
     assert r.status_code == 200, r.text
     sid = r.json()["id"]
     created_session_ids.append(sid)
+    if verify_as:
+        verify(api_client, API, sid, verify_as)
     return sid
 
 
@@ -82,6 +83,8 @@ class TestHealth:
 # ---------- Session CRUD ----------
 class TestSessions:
     def test_create_and_list(self, api_client, created_session_ids):
+        if not ADMIN_TOKEN:
+            pytest.skip("listing all sessions needs ADMIN_TOKEN")
         sid = _new_session(api_client, created_session_ids, "TEST_create")
         r = api_client.get(f"{API}/sessions", timeout=10)
         assert r.status_code == 200
@@ -127,7 +130,8 @@ class TestSessions:
 # ---------- Chat / multi-agent behavior (real LLM) ----------
 class TestChatBilling:
     def test_billing_query_routes_to_billing_and_calls_tool(self, api_client, created_session_ids):
-        sid = _new_session(api_client, created_session_ids, "TEST_billing")
+        sid = _new_session(api_client, created_session_ids, "TEST_billing",
+                           verify_as="acme@example.com")
         res = _send(api_client, sid,
                     "I was double-charged for invoice INV-1002")
         assert res["session_id"] == sid
@@ -145,7 +149,8 @@ class TestChatBilling:
         assert "tool_call" in types
 
     def test_multi_turn_billing_list_invoices(self, api_client, created_session_ids):
-        sid = _new_session(api_client, created_session_ids, "TEST_billing_multi")
+        sid = _new_session(api_client, created_session_ids, "TEST_billing_multi",
+                           verify_as="acme@example.com")
         _send(api_client, sid, "I was double-charged for invoice INV-1002")
         follow = _send(api_client, sid,
                        "Can you list all my invoices for acme@example.com?")
@@ -166,7 +171,8 @@ class TestChatTechnical:
 
 class TestChatRefunds:
     def test_refund_query_calls_eligibility(self, api_client, created_session_ids):
-        sid = _new_session(api_client, created_session_ids, "TEST_refund")
+        sid = _new_session(api_client, created_session_ids, "TEST_refund",
+                           verify_as="acme@example.com")
         res = _send(api_client, sid,
                     "Please refund INV-1001, I cancelled last week.")
         assert res["agent"] == "refunds", f"got {res['agent']}"
@@ -187,7 +193,8 @@ class TestChatClarify:
 
 class TestChatPersistenceAndTraces:
     def test_messages_and_traces_persisted(self, api_client, created_session_ids):
-        sid = _new_session(api_client, created_session_ids, "TEST_persist")
+        sid = _new_session(api_client, created_session_ids, "TEST_persist",
+                           verify_as="acme@example.com")
         res = _send(api_client, sid, "I was double-charged for invoice INV-1002")
 
         # session get returns messages
@@ -203,16 +210,18 @@ class TestChatPersistenceAndTraces:
         assert isinstance(asst.get("trace_events", []), list)
         assert isinstance(asst.get("tool_calls", []), list)
 
-        # traces endpoint returns turns
-        t = api_client.get(f"{API}/sessions/{sid}/traces", timeout=10).json()
-        assert "turns" in t and len(t["turns"]) >= 1
-        turn = t["turns"][0]
-        assert turn["session_id"] == sid
-        assert isinstance(turn.get("trace_events"), list)
-        assert turn.get("user_message") == "I was double-charged for invoice INV-1002"
+        # traces endpoint returns turns (admin-only)
+        if ADMIN_TOKEN:
+            t = api_client.get(f"{API}/sessions/{sid}/traces", timeout=10).json()
+            assert "turns" in t and len(t["turns"]) >= 1
+            turn = t["turns"][0]
+            assert turn["session_id"] == sid
+            assert isinstance(turn.get("trace_events"), list)
+            assert turn.get("user_message") == "I was double-charged for invoice INV-1002"
 
-        # sanity: session summary updated
-        sess = api_client.get(f"{API}/sessions", timeout=10).json()
+        # sanity: session summary updated (customer's own list)
+        sess = api_client.post(f"{API}/sessions/mine", json={"sessions": [
+            {"id": sid, "key": api_client.keys[sid]}]}, timeout=10).json()
         me = next((s for s in sess if s["id"] == sid), None)
         assert me is not None
         assert me["message_count"] >= 2
@@ -243,3 +252,71 @@ class TestChatHandoff:
         types = [ev.get("type") for ev in res.get("trace_events", [])]
         # Must at least have classify
         assert "classify" in types
+
+
+# ---------- Access control (no LLM needed unless noted) ----------
+class TestAccessControl:
+    def test_session_key_required(self, api_client, created_session_ids):
+        sid = _new_session(api_client, created_session_ids, "TEST_acl")
+        stranger = ApiClient(use_session_keys=False)
+        assert stranger.get(f"{API}/sessions/{sid}", timeout=10).status_code == 403
+        assert stranger.post(f"{API}/chat", json={"session_id": sid, "message": "hi"},
+                             timeout=15).status_code == 403
+        assert stranger.delete(f"{API}/sessions/{sid}", timeout=10).status_code == 403
+        wrong = stranger.get(f"{API}/sessions/{sid}", headers={"X-Session-Key": "nope"}, timeout=10)
+        assert wrong.status_code == 403
+        # still there for the real owner
+        assert api_client.get(f"{API}/sessions/{sid}", timeout=10).status_code == 200
+
+    def test_session_key_never_returned_after_creation(self, api_client, created_session_ids):
+        sid = _new_session(api_client, created_session_ids, "TEST_nokey")
+        body = api_client.get(f"{API}/sessions/{sid}", timeout=10).json()
+        assert "key_hash" not in body["session"] and "session_key" not in body["session"]
+
+    def test_admin_endpoints_need_admin_token(self):
+        plain = ApiClient()
+        for path in ("/sessions", "/langfuse/status", "/guardrails/status"):
+            r = plain.get(f"{API}{path}", headers={"X-Admin-Token": "wrong"}, timeout=10)
+            assert r.status_code in (401, 403), (path, r.status_code)
+
+    def test_customer_cannot_self_assert_identity(self, api_client):
+        r = api_client.post(f"{API}/sessions",
+                            json={"title": "x", "customer_email": "acme@example.com"}, timeout=10)
+        assert r.status_code == 403
+
+    def test_verify_rejects_wrong_pin(self, api_client, created_session_ids):
+        sid = _new_session(api_client, created_session_ids, "TEST_badpin")
+        r = api_client.post(f"{API}/sessions/{sid}/verify",
+                            json={"email": "acme@example.com", "pin": "0000"}, timeout=10)
+        assert r.status_code == 401
+        g = api_client.get(f"{API}/sessions/{sid}", timeout=10).json()
+        assert g["session"]["customer_email"] is None
+
+    def test_unverified_session_gets_no_invoice_data(self, api_client, created_session_ids):
+        """Real LLM: an unverified customer asking about an invoice must not get its data."""
+        sid = _new_session(api_client, created_session_ids, "TEST_unverified")
+        res = _send(api_client, sid, "What is the amount on invoice INV-1003?")
+        for tc in res.get("tool_calls", []):
+            assert tc["result"].get("ok") is False, tc
+            assert tc["result"].get("error") == "identity_not_verified", tc
+
+    def test_refund_requires_customer_confirmation(self, api_client, created_session_ids):
+        """Real LLM: the agent may only *propose* a refund; confirming executes it once."""
+        sid = _new_session(api_client, created_session_ids, "TEST_refund_confirm",
+                           verify_as="acme@example.com")
+        res = _send(api_client, sid, "Please refund INV-1001, I cancelled last week.")
+        names = [tc["tool"] for tc in res.get("tool_calls", [])]
+        assert "process_refund" not in names
+        pending = [tc["result"] for tc in res.get("tool_calls", [])
+                   if tc["tool"] == "request_refund"
+                   and tc["result"].get("status") == "pending_confirmation"]
+        if not pending:
+            pytest.skip(f"agent did not propose a refund this run: {names}")
+        cid = pending[0]["confirmation_id"]
+        stranger = ApiClient(use_session_keys=False)
+        assert stranger.post(f"{API}/sessions/{sid}/refunds/{cid}/confirm",
+                             timeout=10).status_code == 403
+        ok = api_client.post(f"{API}/sessions/{sid}/refunds/{cid}/confirm", timeout=15)
+        assert ok.status_code == 200, ok.text
+        again = api_client.post(f"{API}/sessions/{sid}/refunds/{cid}/confirm", timeout=15)
+        assert again.status_code == 409

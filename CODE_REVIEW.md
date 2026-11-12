@@ -1,5 +1,13 @@
 # Code Review — MESH Support (Multi-Agent Customer Support System)
 
+> **Historical document.** This describes an earlier review pass. Several
+> items were reworked afterwards — notably C3/C4 (auth is now per-session keys +
+> a server-side `ADMIN_TOKEN` + verified customer identity, failing closed),
+> refunds (customer confirmation required), guardrails (fail closed), tracing
+> (one trace per turn incl. guardrails, background flush) and hand-off routing
+> (loop guard, no internal text shown to customers). See `SECURITY.md` and the
+> README for the current behaviour.
+
 _Reviewed: 2026-08-23. Scope: `backend/` (server, agents, tools, guardrails) + `frontend/` + config._
 
 ---

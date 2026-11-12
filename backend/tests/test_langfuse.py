@@ -10,32 +10,34 @@ from __future__ import annotations
 
 import os
 import time
-import uuid
 
 import pytest
-import requests
 
-BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
+from tests.api_client import ADMIN_TOKEN, ApiClient, verify
+
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+# Live-server E2E suite: skipped unless REACT_APP_BACKEND_URL points at a running backend.
+pytestmark = pytest.mark.skipif(not BASE_URL, reason="set REACT_APP_BACKEND_URL to run E2E tests")
 API = f"{BASE_URL}/api"
 CHAT_TIMEOUT = 90
 
 
 @pytest.fixture(scope="module")
 def api_client():
-    s = requests.Session()
-    s.headers.update({"Content-Type": "application/json"})
+    if not ADMIN_TOKEN:
+        pytest.skip("Langfuse status is admin-only: set ADMIN_TOKEN to run these tests")
+    s = ApiClient()
     yield s
     s.close()
 
 
 @pytest.fixture(scope="module")
-def cleanup_sids():
+def cleanup_sids(api_client):
     ids = []
     yield ids
-    s = requests.Session()
     for sid in ids:
         try:
-            s.delete(f"{API}/sessions/{sid}", timeout=15)
+            api_client.delete(f"{API}/sessions/{sid}", timeout=15)
         except Exception:
             pass
 
@@ -48,10 +50,18 @@ def _new_session(api_client, cleanup_sids, title="TEST_lf"):
     return sid
 
 
-def _status(api_client):
-    r = api_client.get(f"{API}/langfuse/status", timeout=10)
-    assert r.status_code == 200, r.text
-    return r.json()
+def _status(api_client, wait_for_flush_after=None):
+    """Fetch status. Flushing happens in the background after the response, so
+    optionally poll (up to 10s) until a flush newer than the given time lands."""
+    deadline = time.time() + 10
+    while True:
+        r = api_client.get(f"{API}/langfuse/status", timeout=10)
+        assert r.status_code == 200, r.text
+        st = r.json()
+        if (wait_for_flush_after is None or time.time() > deadline
+                or (st.get("last_flush_ts") or 0) >= wait_for_flush_after):
+            return st
+        time.sleep(0.2)
 
 
 # ---------- Langfuse status endpoint (pre-chat) ----------
@@ -88,6 +98,7 @@ class TestLangfuseTracesIncrement:
         before = _status(api_client)
         sid = _new_session(api_client, cleanup_sids, "TEST_lf_single")
 
+        sent_at = time.time()
         r = api_client.post(f"{API}/chat", json={
             "session_id": sid,
             "message": "I was double-charged for invoice INV-1002",
@@ -101,7 +112,7 @@ class TestLangfuseTracesIncrement:
         assert isinstance(body["trace_events"], list)
         assert isinstance(body["tool_calls"], list)
 
-        after = _status(api_client)
+        after = _status(api_client, wait_for_flush_after=sent_at)
         assert after["last_error"] is None, f"Langfuse errored after chat: {after}"
         assert after["traces_sent"] >= before["traces_sent"] + 1, (
             f"traces_sent did not increment. before={before}, after={after}"
@@ -126,13 +137,14 @@ class TestLangfuseTracesIncrement:
         counters = [before["traces_sent"]]
         last_flushes = [before.get("last_flush_ts") or 0]
         for m in messages:
+            sent_at = time.time()
             r = api_client.post(f"{API}/chat", json={"session_id": sid, "message": m},
                                 timeout=CHAT_TIMEOUT)
             assert r.status_code == 200, r.text
-            st = _status(api_client)
+            st = _status(api_client, wait_for_flush_after=sent_at)
             assert st["last_error"] is None, f"error mid-flight: {st}"
             counters.append(st["traces_sent"])
-            last_flushes.append(st["last_flush_ts"])
+            last_flushes.append(st["last_flush_ts"] or 0)
 
         # each successive counter must be > previous
         for i in range(1, len(counters)):
@@ -150,6 +162,7 @@ class TestLangfuseTracesIncrement:
 class TestChatUnaffectedByLangfuse:
     def test_refund_query_still_routes_and_calls_tool(self, api_client, cleanup_sids):
         sid = _new_session(api_client, cleanup_sids, "TEST_lf_refund")
+        verify(api_client, API, sid, "acme@example.com")
         r = api_client.post(f"{API}/chat", json={
             "session_id": sid,
             "message": "Please refund INV-1001, I cancelled last week.",

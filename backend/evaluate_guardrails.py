@@ -141,6 +141,9 @@ def _report(name: str, results: List[Dict[str, Any]]) -> None:
 
 
 async def main() -> None:
+    g.init_guardrails()  # rails are built at server startup, not on import
+    if not g.GUARDRAILS_STATUS["enabled"]:
+        raise SystemExit(f"Guardrails failed to initialise: {g.GUARDRAILS_STATUS['error']}")
     print("STATUS:", g.GUARDRAILS_STATUS)
     print(f"\nRunning {len(INPUT_CASES)} input + {len(OUTPUT_CASES)} output cases "
           f"through the live rails...")

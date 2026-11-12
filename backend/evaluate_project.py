@@ -20,14 +20,17 @@ Run (backend must be up on :8001):
 """
 from __future__ import annotations
 
+import os
 import statistics
 import time
-import uuid
 from typing import Any, Dict, List, Optional
 
 import requests
 
-BASE = "http://localhost:8001/api"
+BASE = os.environ.get("BASE_URL", "http://localhost:8001/api").rstrip("/")
+API_TOKEN = os.environ.get("API_TOKEN", "").strip()
+# Invoice/refund tools need a verified customer; the cases use acme's invoices.
+EVAL_CUSTOMER = ("acme@example.com", os.environ.get("EVAL_CUSTOMER_PIN", "4821"))
 
 # label schema per case:
 #   block=True  -> expect guardrail to block (agent == "guardrail")
@@ -70,22 +73,36 @@ CASES: List[Dict[str, Any]] = [
 ]
 
 
-def _chat(sid: str, msg: str) -> Dict[str, Any]:
-    r = requests.post(f"{BASE}/chat", json={"session_id": sid, "message": msg}, timeout=90)
+def _new_verified_session(http: Any, base: str) -> tuple:
+    """Create a session (keeping its one-time key) and verify the demo customer."""
+    common = {"Authorization": f"Bearer {API_TOKEN}"} if API_TOKEN else {}
+    r = http.post(f"{base}/sessions", json={"title": "eval"}, headers=common, timeout=30)
+    r.raise_for_status()
+    body = r.json()
+    headers = {**common, "X-Session-Key": body["session_key"]}
+    email, pin = EVAL_CUSTOMER
+    v = http.post(f"{base}/sessions/{body['id']}/verify", json={"email": email, "pin": pin},
+                  headers=headers, timeout=30)
+    v.raise_for_status()
+    return body["id"], headers
+
+
+def _chat(http: Any, base: str, sid: str, headers: Dict[str, str], msg: str) -> Dict[str, Any]:
+    r = http.post(f"{base}/chat", json={"session_id": sid, "message": msg},
+                  headers=headers, timeout=90)
     r.raise_for_status()
     return r.json()
 
 
-def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
-    sid = requests.post(f"{BASE}/sessions", json={"title": "eval"}, timeout=30).json()["id"]
+def run_case(case: Dict[str, Any], http: Any = requests, base: str = BASE) -> Dict[str, Any]:
+    sid, headers = _new_verified_session(http, base)
     t0 = time.perf_counter()
-    d = _chat(sid, case["msg"])
+    d = _chat(http, base, sid, headers, case["msg"])
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
     agent = d.get("agent")
     intent = d.get("intent")
     blocked = agent == "guardrail"
-    tools = [e for e in d.get("trace_events", []) if e.get("type") == "tool_call"]
     tool_used: Optional[str] = None
     for e in d.get("trace_events", []):
         if e.get("type") == "tool_call":

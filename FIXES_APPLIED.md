@@ -1,5 +1,13 @@
 # Fixes Applied — Multi-Agent Customer Support System
 
+> **Historical document.** This describes an earlier review pass. Several
+> items were reworked afterwards — notably C3/C4 (auth is now per-session keys +
+> a server-side `ADMIN_TOKEN` + verified customer identity, failing closed),
+> refunds (customer confirmation required), guardrails (fail closed), tracing
+> (one trace per turn incl. guardrails, background flush) and hand-off routing
+> (loop guard, no internal text shown to customers). See `SECURITY.md` and the
+> README for the current behaviour.
+
 This document records the resolution of all 14 issues raised in `CODE_REVIEW.md`. Each
 issue was fixed **individually**, then verified two ways: (1) the fix itself works, and
 (2) it does not break any other component (re-running the earlier suites after each edit).

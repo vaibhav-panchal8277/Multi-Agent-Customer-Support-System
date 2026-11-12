@@ -61,10 +61,15 @@ EVAL_CASES: List[Dict[str, Any]] = [
 ]
 
 
+# Invoice/refund tools only run for a verified customer; the cases reference
+# acme's invoices, so evaluate as acme (override with EVAL_CUSTOMER_EMAIL).
+EVAL_CUSTOMER = os.environ.get("EVAL_CUSTOMER_EMAIL", "acme@example.com")
+
+
 async def _run_case(case: Dict[str, Any]) -> Dict[str, Any]:
     sid = f"eval-{uuid.uuid4()}"
     t0 = time.perf_counter()
-    state = await run_turn(sid, case["msg"], history=[])
+    state = await run_turn(sid, case["msg"], history=[], customer_email=EVAL_CUSTOMER)
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
     predicted_agent = state.get("current_agent_final") or "supervisor"

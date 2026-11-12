@@ -53,6 +53,7 @@ body {
 .ring-technical  { box-shadow: 0 0 0 1px rgba(14,165,233,0.45), 0 0 24px -6px rgba(14,165,233,0.55); }
 .ring-refunds    { box-shadow: 0 0 0 1px rgba(245,158,11,0.45), 0 0 24px -6px rgba(245,158,11,0.55); }
 .ring-clarify    { box-shadow: 0 0 0 1px rgba(167,139,250,0.45), 0 0 24px -6px rgba(167,139,250,0.55); }
+.ring-guardrail  { box-shadow: 0 0 0 1px rgba(239,68,68,0.45), 0 0 24px -6px rgba(239,68,68,0.55); }
 
 /* Beam animation for active card */
 @keyframes beam-move {

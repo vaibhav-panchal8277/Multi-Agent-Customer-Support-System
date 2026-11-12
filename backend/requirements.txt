@@ -25,5 +25,8 @@ langfuse==4.14.2
 nemoguardrails==0.23.0
 
 # --- Dev / testing (optional) ---
+# Offline suite: `pytest` (fakes the LLM + guardrails, in-memory Mongo).
 pytest>=8.0.0
 requests>=2.31.0
+httpx>=0.27
+mongomock-motor>=0.0.36

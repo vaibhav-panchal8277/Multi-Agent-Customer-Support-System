@@ -101,6 +101,18 @@ let webpackConfig = {
       return webpackConfig;
     },
   },
+  // Jest (yarn test) doesn't read the webpack alias above; mirror it here.
+  jest: {
+    configure: {
+      moduleNameMapper: {
+        '^@/(.*)$': '<rootDir>/src/$1',
+        // CRA's Jest 27 ignores package "exports"; react-router-dom 7's legacy
+        // "main" (dist/main.js) isn't shipped, so point at its CJS build.
+        '^react-router-dom$': '<rootDir>/node_modules/react-router-dom/dist/index.js',
+        '^react-router/dom$': '<rootDir>/node_modules/react-router/dist/development/dom-export.js',
+      },
+    },
+  },
 };
 
 webpackConfig.devServer = (devServerConfig) => {
