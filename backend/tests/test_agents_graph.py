@@ -19,10 +19,12 @@ class ScriptedLLM:
         self.clarify_text = clarify_text
         self.calls: List[str] = []
         self.prompts: Dict[str, List[str]] = {}
+        self.systems: Dict[str, List[str]] = {}
 
     async def llm_json(self, system, user, session_id, span_name):
         self.calls.append(span_name)
         self.prompts.setdefault(span_name, []).append(user)
+        self.systems.setdefault(span_name, []).append(system)
         script = self.scripts[span_name]
         reply = script.pop(0) if len(script) > 1 else script[0]
         return {**reply, "_latency_ms": 1}
@@ -37,11 +39,12 @@ class ScriptedLLM:
 def run(monkeypatch):
     monkeypatch.setattr(agents, "_langfuse", None)
 
-    def _run(scripts, message="help", customer_email=None):
+    def _run(scripts, message="help", customer_email=None, history=None):
         llm = ScriptedLLM(scripts)
         monkeypatch.setattr(agents, "_llm_json", llm.llm_json)
         monkeypatch.setattr(agents, "_llm_text", llm.llm_text)
-        state = asyncio.run(agents.run_turn("s1", message, [], customer_email=customer_email))
+        state = asyncio.run(agents.run_turn("s1", message, history or [],
+                                            customer_email=customer_email))
         return state, llm
 
     return _run
@@ -165,3 +168,50 @@ def test_graph_scopes_tickets_to_the_session(run):
     import tools
     assert tools.MOCK_TICKETS[opened["ticket_id"]]["owner"] == "session:s1"
     assert foreign["error"] == "ticket_not_found"
+
+
+# ---------- current account status is stated every turn ----------
+# Regression (live smoke test on Render): after the customer verified, the
+# Billing agent saw its own earlier "you're not verified" reply in the history
+# and answered from it without calling the tool.
+STALE_HISTORY = [
+    {"role": "user", "content": "What is the amount on invoice INV-1001?"},
+    {"role": "assistant", "content": "I can't view invoice details because your account "
+                                     "isn't verified yet. Please press Verify account."},
+]
+
+
+def test_verified_status_is_stated_above_stale_history(run):
+    _, llm = run({"supervisor": [classify("billing")], "billing": [FINAL]},
+                 message="What is the amount on invoice INV-1001?",
+                 customer_email="acme@example.com", history=STALE_HISTORY)
+    prompt = llm.prompts["billing"][0]
+    assert "VERIFIED as acme@example.com" in prompt
+    assert "NOT VERIFIED" not in prompt
+    # stated before the conversation, so the stale reply can't be read first
+    assert prompt.index("Account status") < prompt.index("isn't verified yet")
+
+
+def test_unverified_status_is_stated(run):
+    _, llm = run({"supervisor": [classify("billing")], "billing": [FINAL]})
+    assert "NOT VERIFIED" in llm.prompts["billing"][0]
+
+
+def test_every_specialist_gets_status_and_the_retry_rule(run):
+    for agent in ("billing", "technical", "refunds"):
+        _, llm = run({"supervisor": [classify(agent)], agent: [FINAL]},
+                     customer_email="acme@example.com")
+        assert "VERIFIED as acme@example.com" in llm.prompts[agent][0], agent
+        system = llm.systems[agent][0]
+        assert "overrides anything" in system and "call your tools again" in system, agent
+        assert "do not retry it" not in system, agent  # the old, over-broad rule
+
+
+def test_status_follows_identity_within_the_same_session(run):
+    """Same session, before and after verifying: the prompt must change."""
+    _, before = run({"supervisor": [classify("billing")], "billing": [FINAL]},
+                    customer_email=None, history=STALE_HISTORY)
+    _, after = run({"supervisor": [classify("billing")], "billing": [FINAL]},
+                   customer_email="acme@example.com", history=STALE_HISTORY)
+    assert "NOT VERIFIED" in before.prompts["billing"][0]
+    assert "VERIFIED as acme@example.com" in after.prompts["billing"][0]
