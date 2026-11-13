@@ -144,3 +144,20 @@ def test_verify_customer():
     assert verify_customer("nobody@example.com", "4821") is None
     assert verify_customer(ACME, "") is None
     assert verify_customer(ACME, "४८२१") is None           # non-ASCII must not raise
+
+
+# ---------- used_args reports what actually ran ----------
+def test_used_args_reflect_server_overrides():
+    used = {}
+    call_tool_scoped("billing", "list_invoices_for", {"email": BETA}, ACME, "s1", used_args=used)
+    assert used == {"email": ACME}
+    used = {}
+    call_tool_scoped("technical", "open_ticket", {"summary": "x", "owner": "evil"}, None, "s9",
+                     used_args=used)
+    assert used == {"summary": "x", "owner": "session:s9"}
+
+
+def test_internal_args_are_not_offered_to_the_llm():
+    from agents import _tool_arg_names
+    assert "owner" in tools.INTERNAL_ARGS
+    assert _tool_arg_names("technical", "open_ticket") == ["summary", "severity"]

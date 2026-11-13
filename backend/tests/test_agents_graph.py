@@ -215,3 +215,49 @@ def test_status_follows_identity_within_the_same_session(run):
                    customer_email="acme@example.com", history=STALE_HISTORY)
     assert "NOT VERIFIED" in before.prompts["billing"][0]
     assert "VERIFIED as acme@example.com" in after.prompts["billing"][0]
+
+
+# ---------- tool args: server-set fields hidden, effective args logged ----------
+# Live finding: the Technical agent was shown open_ticket(summary, severity, owner),
+# filled owner="technical", and the activity feed showed that value even though
+# the server overwrote it.
+def test_tool_list_hides_server_set_owner(run):
+    _, llm = run({"supervisor": [classify("technical")], "technical": [FINAL]})
+    tool_lines = [ln for ln in llm.systems["technical"][0].splitlines()
+                  if ln.startswith("- open_ticket")]
+    assert tool_lines == ["- open_ticket(summary, severity)"]
+
+
+def test_trace_shows_the_args_that_actually_ran(run):
+    import tools
+    state, _ = run({
+        "supervisor": [classify("technical")],
+        "technical": [{"action": "call_tool", "tool": "open_ticket",
+                       "args": {"summary": "login loop", "owner": "technical"}},
+                      FINAL],
+    })
+    call = state["tool_calls"][0]
+    assert call["args"] == {"summary": "login loop"}
+    label = next(e["label"] for e in state["trace_events"] if e["type"] == "tool_call")
+    assert label == "Tool: open_ticket(summary=login loop)"
+    assert tools.MOCK_TICKETS[call["result"]["ticket_id"]]["owner"] == "session:s1"
+
+
+def test_forced_email_is_what_gets_logged(run):
+    state, _ = run({
+        "supervisor": [classify("billing")],
+        "billing": [{"action": "call_tool", "tool": "list_invoices_for",
+                     "args": {"email": "beta@example.com"}}, FINAL],
+    }, customer_email="acme@example.com")
+    call = state["tool_calls"][0]
+    assert call["args"] == {"email": "acme@example.com"}
+    assert {i["customer"] for i in call["result"]["invoices"]} == {"acme@example.com"}
+
+
+def test_rejected_call_still_logs_what_the_agent_asked(run):
+    state, _ = run({
+        "supervisor": [classify("billing")],
+        "billing": [{"action": "call_tool", "tool": "lookup_invoice", "args": "INV-1001"}, FINAL],
+    })
+    assert state["tool_calls"][0]["args"] == "INV-1001"
+    assert state["tool_calls"][0]["result"]["error"].startswith("bad args")

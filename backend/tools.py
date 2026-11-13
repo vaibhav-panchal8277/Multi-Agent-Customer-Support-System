@@ -209,6 +209,10 @@ TOOL_REGISTRY = {
 # LLM, which only supplies free-text args. It FAILS CLOSED: a session with no
 # verified identity cannot read or act on any customer's invoices or refunds.
 
+# Arguments only the server sets (call_tool_scoped overwrites them). They are
+# hidden from the tool list shown to the LLM and from the activity feed.
+INTERNAL_ARGS = frozenset({"owner"})
+
 # Tools whose invoice_id argument must belong to the session's customer.
 _OWNED_INVOICE_TOOLS = {"lookup_invoice", "check_refund_eligibility", "request_refund"}
 # All tools that touch customer-owned data.
@@ -238,7 +242,8 @@ def _ticket_owners(customer_email: Optional[str], session_id: Optional[str]) -> 
 
 def call_tool_scoped(agent_key: str, tool_name: str, args: Any,
                      customer_email: Optional[str] = None,
-                     session_id: Optional[str] = None) -> dict:
+                     session_id: Optional[str] = None,
+                     used_args: Optional[dict] = None) -> dict:
     """Look up and invoke a tool with customer-scoping enforced.
 
     * Customer-data tools require a verified ``customer_email`` (the session's
@@ -249,6 +254,10 @@ def call_tool_scoped(agent_key: str, tool_name: str, args: Any,
       them; ``open_ticket``'s owner is forced, ``get_ticket`` checks it.
     * Malformed LLM output (non-object args, non-string ids, unexpected kwargs)
       returns a ``bad args`` error instead of crashing the turn.
+
+    If ``used_args`` is given, it is filled with the arguments actually used
+    (after the server's overrides), so callers can log what really ran rather
+    than what the LLM asked for.
     """
     fn = TOOL_REGISTRY.get(agent_key, {}).get(tool_name)
     if not fn:
@@ -258,6 +267,9 @@ def call_tool_scoped(agent_key: str, tool_name: str, args: Any,
     if not isinstance(args, dict):
         return {"ok": False, "error": "bad args: expected a JSON object"}
     args = dict(args)
+    if used_args is not None:
+        used_args.clear()
+        used_args.update(args)
 
     if tool_name in _CUSTOMER_DATA_TOOLS:
         scope = (customer_email or "").strip().lower() or None
@@ -291,6 +303,9 @@ def call_tool_scoped(agent_key: str, tool_name: str, args: Any,
                 return {"ok": False, "error": "ticket_not_found",
                         "detail": f"No ticket {args['ticket_id'].upper()} on this account"}
 
+    if used_args is not None:
+        used_args.clear()
+        used_args.update(args)
     try:
         return fn(**args)
     except (TypeError, ValueError, AttributeError) as e:
